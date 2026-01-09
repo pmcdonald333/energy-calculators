@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>System Status</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+      .row { display:flex; gap: 16px; flex-wrap: wrap; }
+      .card { border:1px solid #ddd; border-radius: 12px; padding: 16px; flex:1; min-width: 280px; }
+      .badge { display:inline-block; padding: 6px 10px; border-radius: 999px; font-weight: 700; font-size: 12px; letter-spacing: .3px; }
+      .b-healthy { background:#e7f7ed; border:1px solid #b9e7c7; }
+      .b-degraded{ background:#fff7e6; border:1px solid #ffe0a3; }
+      .b-broken  { background:#fde8e8; border:1px solid #f8b4b4; }
+      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+      th, td { border-bottom: 1px solid #eee; padding: 10px 8px; text-align: left; vertical-align: top; }
+      th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color:#555; }
+      .muted { color:#666; font-size: 13px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+      details { margin-top: 8px; }
+      summary { cursor: pointer; }
+      .ok { color:#0a7; font-weight: 700; }
+      .warn { color:#b76; font-weight: 700; }
+      .err { color:#c33; font-weight: 700; }
+      .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; border:1px solid #ddd; font-size: 12px; }
+      .btn { display:inline-block; padding: 8px 10px; border-radius: 10px; border:1px solid #ddd; text-decoration: none; color: inherit; }
+    </style>
+  </head>
+  <body>
+    <h1>System Status</h1>
+    <p class="muted">Operator dashboard. Data from <span class="mono">/data/system_status.json</span>.</p>
+
+    <div id="top" class="row"></div>
+
+    <div class="row" style="margin-top:16px;">
+      <div class="card" style="flex:2;">
+        <h2 style="margin:0 0 8px 0;">Artifacts</h2>
+        <div id="artifacts"></div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px 0;">Updater Last Run</h2>
+        <div id="updater"></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:16px;">
+      <div class="card">
+        <h2 style="margin:0 0 8px 0;">Runtime Checks</h2>
+        <div id="runtime"></div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px 0;">Recent Flags</h2>
+        <div id="flags"></div>
+      </div>
+    </div>
+
+    <p style="margin-top:20px;">
+      <a class="btn" href="/data/system_status.json" target="_blank" rel="noopener">Open system_status.json</a>
+    </p>
+
+    <script>
+      function badgeClass(status) {
+        if (status === "HEALTHY") return "badge b-healthy";
+        if (status === "DEGRADED") return "badge b-degraded";
+        return "badge b-broken";
+      }
+      function statusTextClass(s) {
+        if (s === "OK" || s === "PASS") return "ok";
+        if (s === "WARN") return "warn";
+        if (s === "ERROR" || s === "FAIL") return "err";
+        return "muted";
+      }
+      function fmt(v) { return v ?? "—"; }
+
+      async function main() {
+        const res = await fetch("/data/system_status.json", { cache: "no-store" });
+        if (!res.ok) throw new Error("Failed to load /data/system_status.json (" + res.status + ")");
+        const d = await res.json();
+
+        // Top cards
+        const top = document.getElementById("top");
+        top.innerHTML = `
+          <div class="card">
+            <div class="${badgeClass(d.overall_health?.status)}">${fmt(d.overall_health?.status)}</div>
+            <p style="margin:10px 0 0 0;"><strong>${fmt(d.overall_health?.reason)}</strong></p>
+            <p class="muted" style="margin:8px 0 0 0;">
+              Generated: <span class="mono">${fmt(d.generated_at_utc)}</span><br/>
+              Env: <span class="pill mono">${fmt(d.environment)}</span>
+            </p>
+          </div>
+          <div class="card">
+            <h2 style="margin:0 0 8px 0;">Build</h2>
+            <p class="muted" style="margin:0;">
+              Version: <span class="mono">${fmt(d.build?.site_version)}</span><br/>
+              Build ID: <span class="mono">${fmt(d.build?.build_id)}</span><br/>
+              Deployed: <span class="mono">${fmt(d.build?.deployed_at_utc)}</span>
+            </p>
+          </div>
+        `;
+
+        // Artifacts table
+        const artifacts = d.artifacts ?? [];
+        const artifactHtml = `
+          <table>
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th>Calc</th>
+                <th>Source</th>
+                <th>Period</th>
+                <th>Last checked</th>
+                <th>Last update</th>
+                <th>Status</th>
+                <th>Fallback</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${artifacts.map(a => `
+                <tr>
+                  <td class="mono">${fmt(a.artifact)}</td>
+                  <td>${fmt(a.calculator)}</td>
+                  <td>${fmt(a.source)}</td>
+                  <td class="mono">${fmt(a.data_period)}</td>
+                  <td class="mono">${fmt(a.last_checked_utc)}</td>
+                  <td class="mono">${fmt(a.last_successful_update_utc)}</td>
+                  <td class="${statusTextClass(a.status)}">${fmt(a.status)}</td>
+                  <td>${a.fallback?.active ? "<span class='pill'>YES</span>" : "No"}</td>
+                </tr>
+                <tr>
+                  <td colspan="8" style="padding-top:0;">
+                    <details>
+                      <summary class="muted">Details</summary>
+                      <div class="muted" style="margin-top:8px;">
+                        Schema valid: <span class="${statusTextClass(a.validation?.schema_valid ? "OK":"ERROR")}">${a.validation?.schema_valid ? "true":"false"}</span><br/>
+                        Complete coverage: <span class="${statusTextClass(a.validation?.complete_coverage ? "OK":"WARN")}">${a.validation?.complete_coverage ? "true":"false"}</span><br/>
+                        Missing keys: <span class="mono">${(a.validation?.missing_keys ?? []).join(", ") || "—"}</span><br/>
+                        Range OK: <span class="${statusTextClass(a.validation?.range_ok ? "OK":"WARN")}">${a.validation?.range_ok ? "true":"false"}</span><br/>
+                        Delta OK: <span class="${statusTextClass(a.validation?.delta_ok ? "OK":"WARN")}">${a.validation?.delta_ok ? "true":"false"}</span><br/>
+                        Fallback: <span class="mono">${a.fallback?.active ? "active" : "inactive"}</span> — ${fmt(a.fallback?.reason)}
+                      </div>
+                    </details>
+                  </td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        `;
+        document.getElementById("artifacts").innerHTML = artifactHtml;
+
+        // Updater panel
+        const u = d.updater_last_run ?? {};
+        document.getElementById("updater").innerHTML = `
+          <p class="muted" style="margin:0;">
+            Result: <strong class="${statusTextClass(u.result === "SUCCESS" ? "OK" : (u.result === "FAILED" ? "ERROR" : "WARN"))}">${fmt(u.result)}</strong><br/>
+            Run ID: <span class="mono">${fmt(u.run_id)}</span><br/>
+            Started: <span class="mono">${fmt(u.started_at_utc)}</span><br/>
+            Finished: <span class="mono">${fmt(u.finished_at_utc)}</span><br/>
+            Duration: <span class="mono">${fmt(u.duration_ms)}</span> ms<br/>
+            Fallback: ${u.fallback_in_effect ? "<span class='pill'>YES</span>" : "No"}
+          </p>
+          <details>
+            <summary class="muted">Jobs</summary>
+            <ul class="muted">
+              ${(u.jobs ?? []).map(j => `<li><span class="mono">${j.job}</span> (${j.source}) — checked:${j.checked} updated:${j.updated} — ${j.message}</li>`).join("") || "<li>—</li>"}
+            </ul>
+          </details>
+        `;
+
+        // Runtime checks
+        const r = d.runtime_checks ?? {};
+        const rows = [
+          ["artifact_fetch_test", r.artifact_fetch_test],
+          ["calculator_boot_test", r.calculator_boot_test],
+          ["ads_container_present", r.ads_container_present]
+        ];
+        document.getElementById("runtime").innerHTML = `
+          <table>
+            <thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead>
+            <tbody>
+              ${rows.map(([name, obj]) => `
+                <tr>
+                  <td class="mono">${name}</td>
+                  <td class="${statusTextClass(obj?.status)}">${fmt(obj?.status)}</td>
+                  <td class="muted">${fmt(obj?.message)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        `;
+
+        // Flags
+        const f = d.recent_flags ?? [];
+        document.getElementById("flags").innerHTML = f.length ? `
+          <ul class="muted">
+            ${f.map(x => `<li><span class="mono">${x.timestamp_utc}</span> — <strong class="${statusTextClass(x.severity === "ERROR" || x.severity === "CRITICAL" ? "ERROR":"WARN")}">${x.severity}</strong> — ${x.summary}</li>`).join("")}
+          </ul>
+        ` : `<p class="muted">No flags.</p>`;
+      }
+
+      main().catch(err => {
+        document.getElementById("top").innerHTML = `
+          <div class="card">
+            <div class="badge b-broken">BROKEN</div>
+            <p style="margin:10px 0 0 0;"><strong>Status data unavailable.</strong></p>
+            <p class="muted" style="margin:8px 0 0 0;"><span class="mono">${err.message}</span></p>
+            <p><a class="btn" href="/data/system_status.json" target="_blank" rel="noopener">Open system_status.json</a></p>
+          </div>
+        `;
+      });
+    </script>
+  </body>
+</html>
