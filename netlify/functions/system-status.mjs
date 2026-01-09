@@ -2,23 +2,33 @@ import { getStore } from "@netlify/blobs";
 
 export default async () => {
   const store = getStore("system");
-  const status = await store.get("system_status", { type: "text" });
 
-  // Fallback: if blobs empty, serve the seeded static file path hint
-  if (!status) {
+  // Prefer json parsing; will be null if missing
+  const statusObj = await store.get("system_status", { type: "json" });
+
+  if (!statusObj) {
     return new Response(
       JSON.stringify({
-        error: "No blob status yet. Run the scheduled function once ('Run now' in Netlify UI) or wait for next schedule."
+        error: "No blob status yet. Run the updater once or wait for the next schedule.",
+        generated_at_utc: new Date().toISOString()
       }),
-      { status: 503, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }
+      {
+        status: 503,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+          "access-control-allow-origin": "*"
+        }
+      }
     );
   }
 
-  return new Response(status, {
+  return new Response(JSON.stringify(statusObj), {
     status: 200,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store"
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*"
     }
   });
 };
