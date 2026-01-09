@@ -8,3 +8,7 @@
     X-Robots-Tag = "noindex, nofollow"
 [functions."update-data"]
 schedule = "@daily"
+[[redirects]]
+from = "/api/system_status"
+to = "/.netlify/functions/system-status"
+status = 200
