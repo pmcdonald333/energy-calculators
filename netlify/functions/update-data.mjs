@@ -110,7 +110,8 @@ async function fetchEiaResidentialRatesAnnual(apiKey) {
   }
 
   return { period: latestPeriod, byState };
-}export default async () => {
+}
+export default async () => {
   const startedAtMs = Date.now();
   const generatedAt = nowIso();
 
@@ -330,7 +331,10 @@ try {
   const prevArtifacts = Array.isArray(prevStatus?.artifacts) ? prevStatus.artifacts : [];
 
   // Keep anything else already listed, but replace any older efficiency row if present
-  const kept = prevArtifacts.filter(a => a?.artifact !== "efficiency_all_other_costs_latest.json");
+const kept = prevArtifacts.filter(a =>
+  a?.artifact !== "efficiency_all_other_costs_latest.json" &&
+  a?.artifact !== "electricity_rates_latest.json"
+);
 
   const efficiencyRow = {
     artifact: "efficiency_all_other_costs_latest.json",
@@ -346,8 +350,21 @@ try {
     validation: effValidation,
     thresholds: { warn_after_days: 400, error_after_days: 800 }
   };
-
-  const artifacts = [...kept, efficiencyRow];
+const electricityRow = {
+  artifact: "electricity_rates_latest.json",
+  calculator: "electricity",
+  source: "EIA",
+  data_period: elecPeriod,
+  last_checked_utc: generatedAt,
+  last_successful_update_utc: wroteElec
+    ? generatedAt
+    : (prevStatus?.artifacts?.find(x => x.artifact === "electricity_rates_latest.json")?.last_successful_update_utc ?? generatedAt),
+  status: elecStatus,
+  fallback: elecFallback,
+  validation: elecValidation,
+  thresholds: { warn_after_days: 45, error_after_days: 90 }
+};
+const artifacts = [...kept, electricityRow, efficiencyRow];
 
   // ---------- OVERALL HEALTH ----------
   const anyError = artifacts.some(a => a.status === "ERROR");
@@ -379,18 +396,28 @@ try {
       finished_at_utc: new Date(finishedAtMs).toISOString(),
       duration_ms: finishedAtMs - startedAtMs,
       result: anyError ? "PARTIAL" : "SUCCESS",
-      jobs: [
-        {
-          job: "eia_efficiency_all_other_costs",
-          source: "EIA",
-          checked: true,
-          updated: wroteArtifact,
-          data_period_detected: dataPeriod,
-          message: wroteArtifact
-            ? "Fetched and stored EIA efficiency all-other-costs."
-            : "Did not overwrite artifact (served last-known-good or failed validation)."
-        }
-      ],
+jobs: [
+  {
+    job: "eia_efficiency_all_other_costs",
+    source: "EIA",
+    checked: true,
+    updated: wroteArtifact,
+    data_period_detected: dataPeriod,
+    message: wroteArtifact
+      ? "Fetched and stored EIA efficiency all-other-costs."
+      : "Did not overwrite artifact (served last-known-good or failed validation)."
+  },
+  {
+    job: "eia_electricity_rates_res",
+    source: "EIA",
+    checked: true,
+    updated: wroteElec,
+    data_period_detected: elecPeriod,
+    message: wroteElec
+      ? "Fetched and stored EIA residential electricity prices."
+      : "Did not overwrite electricity artifact (served last-known-good or failed validation)."
+  }
+],
       errors: anyError ? ["One or more artifacts failed."] : [],
       warnings: anyWarn ? ["One or more artifacts in WARN."] : [],
       fallback_in_effect: anyFallback
