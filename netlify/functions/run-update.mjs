@@ -4,20 +4,30 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-export default async () => {
+export default async (req) => {
+  const token = req.headers.get("x-run-token");
+  const expected = process.env.RUN_UPDATE_TOKEN;
+
+  // If no token set yet, deny by default (safe)
+  if (!expected || token !== expected) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "Forbidden" }),
+      { status: 403, headers: { "content-type": "application/json; charset=utf-8" } }
+    );
+  }
+
   const startedAt = Date.now();
   const generatedAt = nowIso();
 
   const store = getStore("system");
 
-  // Minimal valid status payload (matches your locked schema shape enough to render)
   const status = {
     schema_version: 1,
     environment: "prod",
     generated_at_utc: generatedAt,
     overall_health: {
       status: "DEGRADED",
-      reason: "Manual run wrote initial blob status. Scheduled updater will take over.",
+      reason: "Manual authenticated run wrote blob status.",
       last_successful_update_utc: generatedAt,
       fallback_active: true,
       broken_user_impact: false
@@ -29,16 +39,7 @@ export default async () => {
       finished_at_utc: generatedAt,
       duration_ms: Date.now() - startedAt,
       result: "SUCCESS",
-      jobs: [
-        {
-          job: "manual_run_update",
-          source: "internal",
-          checked: true,
-          updated: true,
-          data_period_detected: "n/a",
-          message: "Manual trigger wrote system_status blob."
-        }
-      ],
+      jobs: [{ job: "manual_run_update", source: "internal", checked: true, updated: true, data_period_detected: "n/a", message: "Manual authenticated trigger wrote system_status blob." }],
       errors: [],
       warnings: [],
       fallback_in_effect: true
@@ -50,15 +51,7 @@ export default async () => {
       ads_container_present: { status: "SKIP", checked_at_utc: generatedAt, message: "Ads not enabled yet." }
     },
     recent_flags: [
-      {
-        timestamp_utc: generatedAt,
-        severity: "WARN",
-        component: "updater",
-        dataset: "system",
-        type: "manual_seed",
-        dedupe_key: "system:manual_seed",
-        summary: "Manual trigger wrote initial blob status."
-      }
+      { timestamp_utc: generatedAt, severity: "WARN", component: "updater", dataset: "system", type: "manual_seed", dedupe_key: "system:manual_seed", summary: "Manual authenticated trigger wrote status." }
     ],
     links: { deploy_logs: null, function_logs: null }
   };
