@@ -87,7 +87,7 @@ async function fetchEiaResidentialRatesAnnual(apiKey) {
 
   params.append("sort[0][column]", "period");
   params.append("sort[0][direction]", "desc");
-  params.set("length", String(STATE_CODES_50_PLUS_DC.length * 3));
+  params.set("length", "5000");
 
   const url = `${base}?${params.toString()}`;
   const res = await fetch(url, { headers: { accept: "application/json" } });
