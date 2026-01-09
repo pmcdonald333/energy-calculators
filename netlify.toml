@@ -12,3 +12,7 @@ schedule = "@daily"
 from = "/api/system_status"
 to = "/.netlify/functions/system-status"
 status = 200
+[[redirects]]
+from = "/api/electricity_rates_latest.json"
+to = "/.netlify/functions/electricity-rates"
+status = 200
