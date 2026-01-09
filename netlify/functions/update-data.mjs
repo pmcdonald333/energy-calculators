@@ -4,80 +4,76 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-const STATE_CODES = [
+// Your state list intent: 50 states + DC + US total.
+// We'll validate for these keys.
+const REQUIRED_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
   "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
   "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
   "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
   "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY",
-  "DC"
+  "DC","US"
 ];
 
-function clampNum(n) {
-  const x = Number(n);
-  return Number.isFinite(x) ? x : null;
+function toNumberOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-function maxPctDelta(prevMap, nextMap) {
-  let max = 0;
-  for (const k of Object.keys(nextMap)) {
-    const p = prevMap?.[k];
-    const n = nextMap?.[k];
-    if (Number.isFinite(p) && Number.isFinite(n) && p > 0) {
-      const pct = Math.abs((n - p) / p) * 100;
-      if (pct > max) max = pct;
-    }
-  }
-  return max;
-}
+async function fetchEiaAllOtherCosts(apiKey) {
+  const base =
+    "https://api.eia.gov/v2/electricity/state-electricity-profiles/energy-efficiency/data/";
 
-async function fetchEiaResidentialAnnualPrices(apiKey) {
-  // EIA v2 retail-sales endpoint supports facets and data[]=price, sectorid=RES for residential.  [oai_citation:4‡U.S. Energy Information Administration](https://www.eia.gov/opendata/documentation.php?utm_source=chatgpt.com)
-  // We'll request all stateids we care about + sort by period desc and take enough rows to cover latest year for all states.
-  const base = "https://api.eia.gov/v2/electricity/retail-sales/data/";
+  // Canonical EIA v2 parameter style: data[]=... facets[...][]=... sort[...]...
   const params = new URLSearchParams();
   params.set("api_key", apiKey);
   params.set("frequency", "annual");
-  params.append("data[]", "price");
-  params.append("facets[sectorid][]", "RES");
-  // Add each state code explicitly to avoid pulling regions like ENC/WNC/etc.
-  for (const s of STATE_CODES) params.append("facets[stateid][]", s);
+  params.append("data[]", "all-other-costs");
 
-  // Sort newest year first
+  // Facets: all states + DC + US (your provided URL used facets[state][])
+  for (const s of REQUIRED_STATES) params.append("facets[state][]", s);
+
+  // Your sort stack
   params.append("sort[0][column]", "period");
   params.append("sort[0][direction]", "desc");
+  params.append("sort[1][column]", "state");
+  params.append("sort[1][direction]", "asc");
+  params.append("sort[2][column]", "sector");
+  params.append("sort[2][direction]", "asc");
 
-  // Pull enough rows to cover one or two years for all states
-  params.set("length", String(STATE_CODES.length * 3)); // plenty
+  params.set("offset", "0");
+  params.set("length", "5000");
 
   const url = `${base}?${params.toString()}`;
-  const res = await fetch(url, { headers: { "accept": "application/json" } });
+  const res = await fetch(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`EIA fetch failed: ${res.status}`);
+
   const json = await res.json();
-
   const rows = json?.response?.data ?? [];
-  if (!Array.isArray(rows) || rows.length === 0) throw new Error("EIA returned no data");
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("EIA returned no data rows");
 
-  // Determine latest period present (e.g., "2024")
-  const latestPeriod = rows[0]?.period;
+  // Determine latest period (because we sorted desc by period)
+  const latestPeriod = String(rows[0]?.period ?? "");
   if (!latestPeriod) throw new Error("EIA data missing period");
 
-  // Keep only the latest period
-  const latestRows = rows.filter(r => r?.period === latestPeriod);
+  // Keep only latest period
+  const latestRows = rows.filter(r => String(r?.period ?? "") === latestPeriod);
 
-  // Build state -> price map (cents/kWh)
+  // Build: by_state -> by_sector -> all_other_costs
   const byState = {};
   for (const r of latestRows) {
-    const stateid = r?.stateid;
-    const price = clampNum(r?.price);
-    if (!stateid || price === null) continue;
-    byState[stateid] = price;
+    const state = r?.state;
+    const sector = r?.sector;
+    const value = toNumberOrNull(r?.["all-other-costs"]);
+    if (!state || !sector) continue;
+
+    if (!byState[state]) byState[state] = {};
+    // store null if missing; keep numeric if present
+    byState[state][sector] = value;
   }
 
-  return {
-    period: String(latestPeriod),
-    byState
-  };
+  return { period: latestPeriod, byState };
 }
 
 export default async () => {
@@ -88,182 +84,152 @@ export default async () => {
   const artifactsStore = getStore("artifacts");
 
   const prevStatus = await systemStore.get("system_status", { type: "json" });
-  const prevElec = await artifactsStore.get("electricity_rates_latest", { type: "json" });
+  const prevArtifact = await artifactsStore.get("efficiency_all_other_costs_latest", { type: "json" });
 
-  // Default: assume fallback until proven otherwise
-  let elecArtifactStatus = "WARN";
-  let elecFallback = { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" };
-  let elecValidation = {
+  // ---- Ingest EIA: All Other Costs ----
+  let effStatus = "WARN";
+  let effFallback = { active: true, reason: "Not ingested yet." };
+  let effValidation = {
     schema_valid: true,
     complete_coverage: false,
-    missing_keys: ["all_states"],
+    missing_keys: [],
     range_ok: true,
     delta_ok: true,
     anomalies: []
   };
-
-  // Attempt EIA ingestion
-  let electricityBlobToWrite = null;
+  let artifactToWrite = null;
+  let dataPeriod = prevArtifact?.data_period ?? "seed";
 
   try {
     const apiKey = process.env.EIA_API_KEY;
-    if (!apiKey) throw new Error("Missing EIA_API_KEY env var");
+    if (!apiKey) throw new Error("Missing EIA_API_KEY");
 
-    const eia = await fetchEiaResidentialAnnualPrices(apiKey);
+    const eia = await fetchEiaAllOtherCosts(apiKey);
+    dataPeriod = eia.period;
 
-    // Validation
-    const missing = STATE_CODES.filter(s => !(s in eia.byState));
-    const values = Object.values(eia.byState);
+    // Coverage: must have each required state present (even if sectors vary)
+    const missingStates = REQUIRED_STATES.filter(s => !(s in eia.byState));
 
-    // Range check: cents/kWh should be a sane number; we’ll accept 1–60 normally, warn beyond but still allow up to 100.
-    const outOfRange = [];
-    for (const [k, v] of Object.entries(eia.byState)) {
-      if (!(v > 0 && v < 100)) outOfRange.push({ state: k, value: v });
+    // Range: values should be >= 0 when present
+    const negatives = [];
+    for (const [st, sectors] of Object.entries(eia.byState)) {
+      for (const [sec, v] of Object.entries(sectors ?? {})) {
+        if (v !== null && v < 0) negatives.push({ state: st, sector: sec, value: v });
+      }
+    }
+    const rangeOk = negatives.length === 0;
+
+    // Delta check vs last-known-good (US total, any sector that exists in both)
+    let deltaOk = true;
+    let maxDeltaPct = 0;
+    const prev = prevArtifact?.values?.by_state ?? null;
+    if (prev && prev.US && eia.byState.US) {
+      for (const [sec, v] of Object.entries(eia.byState.US)) {
+        const pv = prev.US?.[sec];
+        if (Number.isFinite(pv) && Number.isFinite(v) && pv > 0) {
+          const pct = Math.abs((v - pv) / pv) * 100;
+          if (pct > maxDeltaPct) maxDeltaPct = pct;
+        }
+      }
+      // Very loose: annual program costs can shift; warn only if extreme
+      deltaOk = maxDeltaPct <= 250;
     }
 
-    const rangeOk = outOfRange.length === 0;
+    const completeCoverage = missingStates.length === 0;
 
-    // Delta check vs last blob (if present)
-    const prevMap = prevElec?.values?.by_state_cents_per_kwh ?? null;
-    const maxDeltaPct = prevMap ? maxPctDelta(prevMap, eia.byState) : 0;
-    const deltaOk = prevMap ? (maxDeltaPct <= 60) : true; // >60% is suspicious for annual series
-
-    const completeCoverage = missing.length === 0;
-
-    elecValidation = {
+    effValidation = {
       schema_valid: true,
       complete_coverage: completeCoverage,
-      missing_keys: missing.length ? missing : [],
+      missing_keys: missingStates,
       range_ok: rangeOk,
       delta_ok: deltaOk,
       anomalies: [
-        ...(outOfRange.length ? [{ type: "range", details: outOfRange.slice(0, 10) }] : []),
-        ...(prevMap && !deltaOk ? [{ type: "delta", details: { max_delta_pct: Math.round(maxDeltaPct * 10) / 10 } }] : [])
+        ...(negatives.length ? [{ type: "negative_values", details: negatives.slice(0, 10) }] : []),
+        ...(!deltaOk ? [{ type: "delta", details: { max_delta_pct: Math.round(maxDeltaPct * 10) / 10 } }] : [])
       ]
     };
 
-    // Decide OK/WARN/ERROR and fallback rules
-    if (!completeCoverage || !rangeOk) {
-      // Incomplete or weird numbers: keep last-known-good if we have one, else warn and still write what we have
-      elecArtifactStatus = prevElec ? "WARN" : "WARN";
-      elecFallback = prevElec
-        ? { active: true, reason: "EIA data failed validation; serving last-known-good blob" }
-        : { active: true, reason: "EIA data incomplete; serving partial until first good run" };
+    if (completeCoverage && rangeOk) {
+      // Accept and write
+      effStatus = deltaOk ? "OK" : "WARN";
+      effFallback = deltaOk
+        ? { active: false, reason: null }
+        : { active: false, reason: "Large year-over-year delta flagged; data accepted but monitored." };
 
-      electricityBlobToWrite = prevElec ? null : {
+      artifactToWrite = {
         version: 1,
         source: "EIA",
-        series: "electricity/retail-sales price (RES) annual",
+        dataset: "state-electricity-profiles/energy-efficiency",
+        metric: "all-other-costs",
         data_period: eia.period,
         fetched_at_utc: generatedAt,
-        units: "cents_per_kwh",
-        values: {
-          by_state_cents_per_kwh: eia.byState
-        }
-      };
-    } else if (!deltaOk) {
-      // Suspicious jump: warn, but still keep last-known-good if available
-      elecArtifactStatus = prevElec ? "WARN" : "WARN";
-      elecFallback = prevElec
-        ? { active: true, reason: "EIA data shows large jump vs prior; serving last-known-good blob" }
-        : { active: false, reason: "No prior blob; accepting first run despite delta flag" };
-
-      electricityBlobToWrite = prevElec ? null : {
-        version: 1,
-        source: "EIA",
-        series: "electricity/retail-sales price (RES) annual",
-        data_period: eia.period,
-        fetched_at_utc: generatedAt,
-        units: "cents_per_kwh",
-        values: { by_state_cents_per_kwh: eia.byState }
+        values: { by_state: eia.byState }
       };
     } else {
-      // Good data
-      elecArtifactStatus = "OK";
-      elecFallback = { active: false, reason: null };
-
-      electricityBlobToWrite = {
-        version: 1,
-        source: "EIA",
-        series: "electricity/retail-sales price (RES) annual",
-        data_period: eia.period,
-        fetched_at_utc: generatedAt,
-        units: "cents_per_kwh",
-        values: { by_state_cents_per_kwh: eia.byState }
-      };
+      // Validation fail: keep last-known-good if exists
+      if (prevArtifact) {
+        effStatus = "WARN";
+        effFallback = { active: true, reason: "Validation failed; serving last-known-good artifact." };
+        artifactToWrite = null;
+      } else {
+        // No prior artifact; still write what we have, but clearly WARN+fallback
+        effStatus = "WARN";
+        effFallback = { active: true, reason: "Incomplete data on first ingest; serving partial until next run." };
+        artifactToWrite = {
+          version: 1,
+          source: "EIA",
+          dataset: "state-electricity-profiles/energy-efficiency",
+          metric: "all-other-costs",
+          data_period: eia.period,
+          fetched_at_utc: generatedAt,
+          values: { by_state: eia.byState }
+        };
+      }
     }
   } catch (err) {
-    elecArtifactStatus = prevElec ? "WARN" : "ERROR";
-    elecFallback = prevElec
-      ? { active: true, reason: `EIA fetch failed; serving last-known-good blob (${String(err.message)})` }
-      : { active: true, reason: `EIA fetch failed and no prior blob (${String(err.message)})` };
-    elecValidation = {
+    if (prevArtifact) {
+      effStatus = "WARN";
+      effFallback = { active: true, reason: `Fetch failed; serving last-known-good (${String(err.message)})` };
+    } else {
+      effStatus = "ERROR";
+      effFallback = { active: true, reason: `Fetch failed and no prior artifact (${String(err.message)})` };
+    }
+    effValidation = {
       schema_valid: false,
       complete_coverage: false,
-      missing_keys: ["all_states"],
+      missing_keys: ["states"],
       range_ok: false,
       delta_ok: false,
       anomalies: [{ type: "fetch_error", details: String(err.message) }]
     };
   }
 
-  // Write artifact blob if we have a validated payload to write
-  if (electricityBlobToWrite) {
-    await artifactsStore.set("electricity_rates_latest", JSON.stringify(electricityBlobToWrite), {
+  if (artifactToWrite) {
+    await artifactsStore.set("efficiency_all_other_costs_latest", JSON.stringify(artifactToWrite), {
       contentType: "application/json"
     });
   }
 
-  // Compose status artifacts (keep your other placeholders for now)
+  // ---- Compose system status ----
+  // Keep your existing other placeholder artifacts for now (from prevStatus if present).
+  const prevArtifacts = Array.isArray(prevStatus?.artifacts) ? prevStatus.artifacts : [];
+  const keepOthers = prevArtifacts.filter(a =>
+    a?.artifact !== "efficiency_all_other_costs_latest.json" &&
+    a?.artifact !== "efficiency_all_other_costs_latest.json"
+  );
+
   const artifacts = [
+    ...keepOthers,
     {
-      artifact: "electricity_rates_latest.json",
-      calculator: "electricity",
+      artifact: "efficiency_all_other_costs_latest.json",
+      calculator: "efficiency",
       source: "EIA",
-      data_period: electricityBlobToWrite?.data_period ?? prevElec?.data_period ?? "seed",
+      data_period: dataPeriod,
       last_checked_utc: generatedAt,
-      last_successful_update_utc: electricityBlobToWrite ? generatedAt : (prevStatus?.artifacts?.find(x => x.artifact === "electricity_rates_latest.json")?.last_successful_update_utc ?? generatedAt),
-      status: elecArtifactStatus,
-      fallback: elecFallback,
-      validation: elecValidation,
-      thresholds: { warn_after_days: 45, error_after_days: 90 }
-    },
-    {
-      artifact: "fuel_prices_latest.json",
-      calculator: "heating",
-      source: "EIA",
-      data_period: "seed",
-      last_checked_utc: generatedAt,
-      last_successful_update_utc: prevStatus?.artifacts?.find(x => x.artifact === "fuel_prices_latest.json")?.last_successful_update_utc ?? generatedAt,
-      status: "WARN",
-      fallback: { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" },
-      validation: {
-        schema_valid: true,
-        complete_coverage: false,
-        missing_keys: ["all_states"],
-        range_ok: true,
-        delta_ok: true,
-        anomalies: []
-      },
-      thresholds: { warn_after_days: 21, error_after_days: 45 }
-    },
-    {
-      artifact: "climate_hdd_cdd_latest.json",
-      calculator: "heating",
-      source: "NOAA",
-      data_period: "seed",
-      last_checked_utc: generatedAt,
-      last_successful_update_utc: prevStatus?.artifacts?.find(x => x.artifact === "climate_hdd_cdd_latest.json")?.last_successful_update_utc ?? generatedAt,
-      status: "WARN",
-      fallback: { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" },
-      validation: {
-        schema_valid: true,
-        complete_coverage: false,
-        missing_keys: ["all_states"],
-        range_ok: true,
-        delta_ok: true,
-        anomalies: []
-      },
+      last_successful_update_utc: artifactToWrite ? generatedAt : (prevStatus?.generated_at_utc ?? generatedAt),
+      status: effStatus,
+      fallback: effFallback,
+      validation: effValidation,
       thresholds: { warn_after_days: 400, error_after_days: 800 }
     }
   ];
@@ -299,14 +265,14 @@ export default async () => {
       result: anyError ? "PARTIAL" : "SUCCESS",
       jobs: [
         {
-          job: "electricity_eia_ingest",
+          job: "eia_efficiency_all_other_costs",
           source: "EIA",
           checked: true,
-          updated: Boolean(electricityBlobToWrite),
-          data_period_detected: artifacts[0].data_period,
-          message: electricityBlobToWrite
-            ? "Fetched and stored electricity prices from EIA."
-            : "Did not overwrite electricity artifact (served last-known-good or seeded)."
+          updated: Boolean(artifactToWrite),
+          data_period_detected: dataPeriod,
+          message: artifactToWrite
+            ? "Fetched and stored EIA efficiency all-other-costs."
+            : "Did not overwrite artifact (served last-known-good or awaiting next run)."
         }
       ],
       errors: anyError ? ["One or more artifacts failed."] : [],
@@ -322,20 +288,18 @@ export default async () => {
     recent_flags: [
       {
         timestamp_utc: generatedAt,
-        severity: (overall === "BROKEN") ? "ERROR" : "WARN",
-        component: "electricity",
+        severity: anyError ? "ERROR" : "WARN",
+        component: "efficiency",
         dataset: "EIA",
         type: "ingest",
-        dedupe_key: "electricity:ingest",
-        summary: `Electricity ingest run complete. Status=${artifacts[0].status}, fallback=${artifacts[0].fallback.active ? "on" : "off"}.`
+        dedupe_key: "efficiency:all_other_costs",
+        summary: `EIA efficiency ingest complete. Status=${effStatus}, fallback=${effFallback.active ? "on" : "off"}, period=${dataPeriod}.`
       }
     ],
     links: prevStatus?.links ?? { deploy_logs: null, function_logs: null }
   };
 
-  await systemStore.set("system_status", JSON.stringify(status), {
-    contentType: "application/json"
-  });
+  await systemStore.set("system_status", JSON.stringify(status), { contentType: "application/json" });
 
   return new Response("ok", { status: 200 });
 };
