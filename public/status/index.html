@@ -74,7 +74,11 @@
       function fmt(v) { return v ?? "—"; }
 
       async function main() {
-        const res = await fetch("/data/system_status.json", { cache: "no-store" });
+        let res = await fetch("/api/system_status", { cache: "no-store" });
+if (!res.ok) {
+  // fallback to seeded static JSON
+  res = await fetch("/data/system_status.json", { cache: "no-store" });
+}
         if (!res.ok) throw new Error("Failed to load /data/system_status.json (" + res.status + ")");
         const d = await res.json();
 
