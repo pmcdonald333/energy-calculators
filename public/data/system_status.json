@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "environment": "prod",
+  "generated_at_utc": "2026-01-09T00:00:00Z",
+  "overall_health": {
+    "status": "DEGRADED",
+    "reason": "Status initialized; updater not yet configured. Serving seeded artifacts.",
+    "last_successful_update_utc": "2026-01-09T00:00:00Z",
+    "fallback_active": true,
+    "broken_user_impact": false
+  },
+  "build": {
+    "site_version": "git:unknown",
+    "build_id": null,
+    "deployed_at_utc": null
+  },
+  "updater_last_run": {
+    "run_id": "seed",
+    "started_at_utc": "2026-01-09T00:00:00Z",
+    "finished_at_utc": "2026-01-09T00:00:00Z",
+    "duration_ms": 0,
+    "result": "PARTIAL",
+    "jobs": [
+      {
+        "job": "seed_status",
+        "source": "internal",
+        "checked": true,
+        "updated": true,
+        "data_period_detected": "seed",
+        "message": "Seeded system status. Updater not yet configured."
+      }
+    ],
+    "errors": [],
+    "warnings": [],
+    "fallback_in_effect": true
+  },
+  "artifacts": [
+    {
+      "artifact": "electricity_rates_latest.json",
+      "calculator": "electricity",
+      "source": "EIA",
+      "data_period": "seed",
+      "last_checked_utc": "2026-01-09T00:00:00Z",
+      "last_successful_update_utc": "2026-01-09T00:00:00Z",
+      "status": "WARN",
+      "fallback": { "active": true, "reason": "Seeded placeholder data" },
+      "validation": {
+        "schema_valid": true,
+        "complete_coverage": false,
+        "missing_keys": ["all_states"],
+        "range_ok": true,
+        "delta_ok": true,
+        "anomalies": []
+      },
+      "thresholds": { "warn_after_days": 45, "error_after_days": 90 }
+    },
+    {
+      "artifact": "fuel_prices_latest.json",
+      "calculator": "heating",
+      "source": "EIA",
+      "data_period": "seed",
+      "last_checked_utc": "2026-01-09T00:00:00Z",
+      "last_successful_update_utc": "2026-01-09T00:00:00Z",
+      "status": "WARN",
+      "fallback": { "active": true, "reason": "Seeded placeholder data" },
+      "validation": {
+        "schema_valid": true,
+        "complete_coverage": false,
+        "missing_keys": ["all_states"],
+        "range_ok": true,
+        "delta_ok": true,
+        "anomalies": []
+      },
+      "thresholds": { "warn_after_days": 21, "error_after_days": 45 }
+    },
+    {
+      "artifact": "climate_hdd_cdd_latest.json",
+      "calculator": "heating",
+      "source": "NOAA",
+      "data_period": "seed",
+      "last_checked_utc": "2026-01-09T00:00:00Z",
+      "last_successful_update_utc": "2026-01-09T00:00:00Z",
+      "status": "WARN",
+      "fallback": { "active": true, "reason": "Seeded placeholder data" },
+      "validation": {
+        "schema_valid": true,
+        "complete_coverage": false,
+        "missing_keys": ["all_states"],
+        "range_ok": true,
+        "delta_ok": true,
+        "anomalies": []
+      },
+      "thresholds": { "warn_after_days": 400, "error_after_days": 800 }
+    }
+  ],
+  "runtime_checks": {
+    "artifact_fetch_test": {
+      "status": "SKIP",
+      "checked_at_utc": "2026-01-09T00:00:00Z",
+      "message": "Runtime checks not yet enabled."
+    },
+    "calculator_boot_test": {
+      "status": "SKIP",
+      "checked_at_utc": "2026-01-09T00:00:00Z",
+      "message": "Runtime checks not yet enabled."
+    },
+    "ads_container_present": {
+      "status": "SKIP",
+      "checked_at_utc": "2026-01-09T00:00:00Z",
+      "message": "Ads not yet configured."
+    }
+  },
+  "recent_flags": [
+    {
+      "timestamp_utc": "2026-01-09T00:00:00Z",
+      "severity": "WARN",
+      "component": "status",
+      "dataset": "system",
+      "type": "seeded",
+      "dedupe_key": "system:seeded",
+      "summary": "Seeded status and placeholder artifacts are active until the updater is implemented."
+    }
+  ],
+  "links": { "deploy_logs": null, "function_logs": null }
+}
