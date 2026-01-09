@@ -66,8 +66,51 @@ async function fetchEiaAllOtherCosts(apiKey) {
 
   return { period: latestPeriod, byState };
 }
+const STATE_CODES_50_PLUS_DC = [
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
+  "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
+  "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+  "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
+  "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY",
+  "DC"
+];
 
-export default async () => {
+async function fetchEiaResidentialRatesAnnual(apiKey) {
+  const base = "https://api.eia.gov/v2/electricity/retail-sales/data/";
+  const params = new URLSearchParams();
+  params.set("api_key", apiKey);
+  params.set("frequency", "annual");
+  params.append("data[]", "price");
+  params.append("facets[sectorid][]", "RES");
+  for (const s of STATE_CODES_50_PLUS_DC) params.append("facets[stateid][]", s);
+
+  params.append("sort[0][column]", "period");
+  params.append("sort[0][direction]", "desc");
+  params.set("length", String(STATE_CODES_50_PLUS_DC.length * 3));
+
+  const url = `${base}?${params.toString()}`;
+  const res = await fetch(url, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`EIA retail-sales fetch failed: ${res.status}`);
+
+  const json = await res.json();
+  const rows = json?.response?.data ?? [];
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("EIA retail-sales returned no data");
+
+  const latestPeriod = String(rows[0]?.period ?? "");
+  if (!latestPeriod) throw new Error("EIA retail-sales missing period");
+
+  const latestRows = rows.filter(r => String(r?.period ?? "") === latestPeriod);
+
+  const byState = {};
+  for (const r of latestRows) {
+    const st = r?.stateid;
+    const v = Number(r?.price);
+    if (!st || !Number.isFinite(v)) continue;
+    byState[st] = v; // cents per kWh
+  }
+
+  return { period: latestPeriod, byState };
+}export default async () => {
   const startedAtMs = Date.now();
   const generatedAt = nowIso();
 
