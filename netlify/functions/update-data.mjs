@@ -66,6 +66,7 @@ async function fetchEiaAllOtherCosts(apiKey) {
 
   return { period: latestPeriod, byState };
 }
+
 const STATE_CODES_50_PLUS_DC = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
   "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
@@ -231,7 +232,8 @@ try {
     delta_ok: false,
     anomalies: [{ type: "fetch_error", details: String(err.message) }]
   };
-}  // ---------- INGEST: Efficiency (All Other Costs) ----------
+}  
+  // ---------- INGEST: Efficiency (All Other Costs) ----------
   let effStatus = "WARN";
   let effFallback = { active: true, reason: "Not ingested yet." };
   let effValidation = {
