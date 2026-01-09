@@ -3,88 +3,146 @@ import { getStore } from "@netlify/blobs";
 function nowIso() {
   return new Date().toISOString();
 }
+function daysBetween(aIso, bIso) {
+  const a = new Date(aIso).getTime();
+  const b = new Date(bIso).getTime();
+  return Math.floor((b - a) / (1000 * 60 * 60 * 24));
+}
 
-// This is a Scheduled Function. Netlify will invoke it on the cron schedule.
-// The request body contains { next_run }, but we don't need it yet.  [oai_citation:2‡Netlify Docs](https://docs.netlify.com/build/functions/scheduled-functions/)
-export default async (req) => {
-  const startedAt = Date.now();
+export default async () => {
+  const startedAtMs = Date.now();
   const generatedAt = nowIso();
 
-  const store = getStore("system"); // global store name
+  const store = getStore("system");
 
-  // Load existing status if present; otherwise fall back to a safe minimal object.
-  let status =
-    (await store.get("system_status", { type: "json" })) ??
+  // Pull existing blob if present (keeps continuity of last_successful_update if you want later)
+  const prev = await store.get("system_status", { type: "json" });
+
+  // Build artifact list based on your Phase 1 artifacts
+  const artifacts = [
     {
-      schema_version: 1,
-      environment: "prod",
-      generated_at_utc: generatedAt,
-      overall_health: {
-        status: "DEGRADED",
-        reason: "Initialized in updater; serving seeded artifacts until real data updater is implemented.",
-        last_successful_update_utc: generatedAt,
-        fallback_active: true,
-        broken_user_impact: false
+      artifact: "electricity_rates_latest.json",
+      calculator: "electricity",
+      source: "EIA",
+      data_period: "seed",
+      last_checked_utc: generatedAt,
+      last_successful_update_utc: prev?.artifacts?.find(x => x.artifact === "electricity_rates_latest.json")?.last_successful_update_utc ?? generatedAt,
+      status: "WARN",
+      fallback: { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" },
+      validation: {
+        schema_valid: true,
+        complete_coverage: false,
+        missing_keys: ["all_states"],
+        range_ok: true,
+        delta_ok: true,
+        anomalies: []
       },
-      build: { site_version: "git:unknown", build_id: null, deployed_at_utc: null },
-      updater_last_run: { run_id: "init", started_at_utc: generatedAt, finished_at_utc: generatedAt, duration_ms: 0, result: "PARTIAL", jobs: [], errors: [], warnings: [], fallback_in_effect: true },
-      artifacts: [],
-      runtime_checks: {
-        artifact_fetch_test: { status: "SKIP", checked_at_utc: generatedAt, message: "Runtime checks not yet enabled." },
-        calculator_boot_test: { status: "SKIP", checked_at_utc: generatedAt, message: "Runtime checks not yet enabled." },
-        ads_container_present: { status: "SKIP", checked_at_utc: generatedAt, message: "Ads not yet configured." }
+      thresholds: { warn_after_days: 45, error_after_days: 90 }
+    },
+    {
+      artifact: "fuel_prices_latest.json",
+      calculator: "heating",
+      source: "EIA",
+      data_period: "seed",
+      last_checked_utc: generatedAt,
+      last_successful_update_utc: prev?.artifacts?.find(x => x.artifact === "fuel_prices_latest.json")?.last_successful_update_utc ?? generatedAt,
+      status: "WARN",
+      fallback: { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" },
+      validation: {
+        schema_valid: true,
+        complete_coverage: false,
+        missing_keys: ["all_states"],
+        range_ok: true,
+        delta_ok: true,
+        anomalies: []
       },
-      recent_flags: [],
-      links: { deploy_logs: null, function_logs: null }
-    };
+      thresholds: { warn_after_days: 21, error_after_days: 45 }
+    },
+    {
+      artifact: "climate_hdd_cdd_latest.json",
+      calculator: "heating",
+      source: "NOAA",
+      data_period: "seed",
+      last_checked_utc: generatedAt,
+      last_successful_update_utc: prev?.artifacts?.find(x => x.artifact === "climate_hdd_cdd_latest.json")?.last_successful_update_utc ?? generatedAt,
+      status: "WARN",
+      fallback: { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" },
+      validation: {
+        schema_valid: true,
+        complete_coverage: false,
+        missing_keys: ["all_states"],
+        range_ok: true,
+        delta_ok: true,
+        anomalies: []
+      },
+      thresholds: { warn_after_days: 400, error_after_days: 800 }
+    }
+  ];
 
-  // Update “heartbeat” fields
-  status.generated_at_utc = generatedAt;
+  // Deterministic overall health scoring (simplified for now)
+  const anyFallback = artifacts.some(a => a.fallback?.active);
+  const anyError = artifacts.some(a => a.status === "ERROR");
+  const anyWarn = artifacts.some(a => a.status === "WARN");
 
-  // Record updater run summary (stub: no real EIA/NOAA fetch yet)
-  const finishedAt = Date.now();
-  status.updater_last_run = {
-    run_id: generatedAt,
-    started_at_utc: new Date(finishedAt - (finishedAt - startedAt)).toISOString(),
-    finished_at_utc: new Date(finishedAt).toISOString(),
-    duration_ms: finishedAt - startedAt,
-    result: "SUCCESS",
-    jobs: [
+  const overallStatus = anyError ? "BROKEN" : (anyFallback || anyWarn ? "DEGRADED" : "HEALTHY");
+
+  const finishedAtMs = Date.now();
+  const durationMs = finishedAtMs - startedAtMs;
+
+  const status = {
+    schema_version: 1,
+    environment: "prod",
+    generated_at_utc: generatedAt,
+    overall_health: {
+      status: overallStatus,
+      reason:
+        overallStatus === "HEALTHY"
+          ? "All artifacts valid; no fallback active."
+          : "Updater heartbeat running. Real data ingestion not yet enabled; seeded artifacts remain in use.",
+      last_successful_update_utc: generatedAt,
+      fallback_active: anyFallback,
+      broken_user_impact: overallStatus === "BROKEN"
+    },
+    build: prev?.build ?? { site_version: "git:unknown", build_id: null, deployed_at_utc: null },
+    updater_last_run: {
+      run_id: generatedAt,
+      started_at_utc: new Date(startedAtMs).toISOString(),
+      finished_at_utc: new Date(finishedAtMs).toISOString(),
+      duration_ms: durationMs,
+      result: "SUCCESS",
+      jobs: [
+        {
+          job: "update_system_status",
+          source: "internal",
+          checked: true,
+          updated: true,
+          data_period_detected: "n/a",
+          message: "Scheduled updater ran (heartbeat). Real EIA/NOAA ingestion not enabled yet."
+        }
+      ],
+      errors: [],
+      warnings: [],
+      fallback_in_effect: anyFallback
+    },
+    artifacts,
+    runtime_checks: prev?.runtime_checks ?? {
+      artifact_fetch_test: { status: "SKIP", checked_at_utc: generatedAt, message: "Runtime checks not yet enabled." },
+      calculator_boot_test: { status: "SKIP", checked_at_utc: generatedAt, message: "Runtime checks not yet enabled." },
+      ads_container_present: { status: "SKIP", checked_at_utc: generatedAt, message: "Ads not yet configured." }
+    },
+    recent_flags: [
       {
-        job: "update_system_status",
-        source: "internal",
-        checked: true,
-        updated: true,
-        data_period_detected: "n/a",
-        message: "Updated status heartbeat. Data fetch not yet implemented."
+        timestamp_utc: generatedAt,
+        severity: "WARN",
+        component: "updater",
+        dataset: "system",
+        type: "heartbeat",
+        dedupe_key: "system:heartbeat",
+        summary: "Scheduled updater ran successfully (heartbeat). Seeded artifacts remain until real ingestion is enabled."
       }
     ],
-    errors: [],
-    warnings: [],
-    fallback_in_effect: status.overall_health?.fallback_active ?? true
+    links: prev?.links ?? { deploy_logs: null, function_logs: null }
   };
-
-  // Deterministic overall health (for now: degraded until real datasets implemented)
-  status.overall_health = {
-    status: "DEGRADED",
-    reason: "Updater heartbeat running. Real data ingestion not yet enabled; seeded artifacts remain in use.",
-    last_successful_update_utc: generatedAt,
-    fallback_active: true,
-    broken_user_impact: false
-  };
-
-  // Keep a short flags feed
-  status.recent_flags = [
-    {
-      timestamp_utc: generatedAt,
-      severity: "WARN",
-      component: "updater",
-      dataset: "system",
-      type: "heartbeat",
-      dedupe_key: "system:heartbeat",
-      summary: "Scheduled updater ran successfully (heartbeat). Real data ingestion not yet enabled."
-    }
-  ].slice(0, 10);
 
   await store.set("system_status", JSON.stringify(status), {
     contentType: "application/json"
@@ -92,6 +150,3 @@ export default async (req) => {
 
   return new Response("ok", { status: 200 });
 };
-
-// Schedule can live in code OR netlify.toml. We'll put it in netlify.toml.
-// (If you prefer, you can export config here instead.)  [oai_citation:3‡Netlify Docs](https://docs.netlify.com/build/functions/scheduled-functions/)
