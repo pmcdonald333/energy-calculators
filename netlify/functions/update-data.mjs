@@ -120,7 +120,117 @@ async function fetchEiaResidentialRatesAnnual(apiKey) {
   const prevStatus = await systemStore.get("system_status", { type: "json" });
   const prevArtifact = await artifactsStore.get("efficiency_all_other_costs_latest", { type: "json" });
 
-  // ---------- INGEST: Efficiency (All Other Costs) ----------
+  // ---------- INGEST: Electricity rates (RES) ----------
+const prevElec = await artifactsStore.get("electricity_rates_latest", { type: "json" });
+
+let elecStatus = "WARN";
+let elecFallback = { active: true, reason: "Seeded placeholder data (real ingestion not enabled yet)" };
+let elecValidation = {
+  schema_valid: true,
+  complete_coverage: false,
+  missing_keys: [],
+  range_ok: true,
+  delta_ok: true,
+  anomalies: []
+};
+let wroteElec = false;
+let elecPeriod = prevElec?.data_period ?? "seed";
+
+try {
+  const apiKey = process.env.EIA_API_KEY;
+  if (!apiKey) throw new Error("Missing EIA_API_KEY");
+
+  const eia = await fetchEiaResidentialRatesAnnual(apiKey);
+  elecPeriod = eia.period;
+
+  const missing = STATE_CODES_50_PLUS_DC.filter(s => !(s in eia.byState));
+
+  // Range sanity: cents/kWh, allow 0 < v < 100
+  const outOfRange = [];
+  for (const [st, v] of Object.entries(eia.byState)) {
+    if (!(v > 0 && v < 100)) outOfRange.push({ state: st, value: v });
+  }
+  const rangeOk = outOfRange.length === 0;
+
+  // Delta vs previous (optional but useful)
+  let deltaOk = true;
+  let maxDeltaPct = 0;
+  const prevMap = prevElec?.values?.by_state_cents_per_kwh ?? null;
+  if (prevMap) {
+    for (const st of Object.keys(eia.byState)) {
+      const p = prevMap[st];
+      const n = eia.byState[st];
+      if (Number.isFinite(p) && Number.isFinite(n) && p > 0) {
+        const pct = Math.abs((n - p) / p) * 100;
+        if (pct > maxDeltaPct) maxDeltaPct = pct;
+      }
+    }
+    // Annual series: very loose, only flag extreme
+    deltaOk = maxDeltaPct <= 60;
+  }
+
+  const complete = missing.length === 0;
+
+  elecValidation = {
+    schema_valid: true,
+    complete_coverage: complete,
+    missing_keys: missing,
+    range_ok: rangeOk,
+    delta_ok: deltaOk,
+    anomalies: [
+      ...(outOfRange.length ? [{ type: "range", details: outOfRange.slice(0, 10) }] : []),
+      ...(prevMap && !deltaOk ? [{ type: "delta", details: { max_delta_pct: Math.round(maxDeltaPct * 10) / 10 } }] : [])
+    ]
+  };
+
+  if (complete && rangeOk) {
+    elecStatus = deltaOk ? "OK" : "WARN";
+    elecFallback = { active: false, reason: deltaOk ? null : "Large YoY delta flagged; published but monitored." };
+
+    const elecArtifact = {
+      version: 1,
+      source: "EIA",
+      dataset: "electricity/retail-sales",
+      metric: "price",
+      sector: "RES",
+      data_period: eia.period,
+      fetched_at_utc: generatedAt,
+      units: "cents_per_kwh",
+      values: { by_state_cents_per_kwh: eia.byState }
+    };
+
+    await artifactsStore.set("electricity_rates_latest", JSON.stringify(elecArtifact), {
+      contentType: "application/json"
+    });
+
+    wroteElec = true;
+  } else {
+    // keep last-known-good if available
+    if (prevElec) {
+      elecStatus = "WARN";
+      elecFallback = { active: true, reason: "Validation failed; serving last-known-good electricity artifact." };
+    } else {
+      elecStatus = "ERROR";
+      elecFallback = { active: true, reason: "Validation failed and no prior electricity artifact exists." };
+    }
+  }
+} catch (err) {
+  if (prevElec) {
+    elecStatus = "WARN";
+    elecFallback = { active: true, reason: `Fetch failed; serving last-known-good (${String(err.message)})` };
+  } else {
+    elecStatus = "ERROR";
+    elecFallback = { active: true, reason: `Fetch failed and no prior artifact (${String(err.message)})` };
+  }
+  elecValidation = {
+    schema_valid: false,
+    complete_coverage: false,
+    missing_keys: ["all_states"],
+    range_ok: false,
+    delta_ok: false,
+    anomalies: [{ type: "fetch_error", details: String(err.message) }]
+  };
+}  // ---------- INGEST: Efficiency (All Other Costs) ----------
   let effStatus = "WARN";
   let effFallback = { active: true, reason: "Not ingested yet." };
   let effValidation = {
