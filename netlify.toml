@@ -6,3 +6,5 @@
   for = "/status/*"
   [headers.values]
     X-Robots-Tag = "noindex, nofollow"
+[functions."update-data"]
+schedule = "@daily"
