@@ -127,7 +127,6 @@
   ],
   "duoarea_to_geo_code": {
     "NUS": "US",
-    "US": "US",
     
     "R10": "R10",
     "R1X": "R1X",
@@ -195,7 +194,7 @@
     "accepted_duoarea_petroleum_gnd": 19,
     "accepted_duoarea_petroleum_wfr": 47,
     "accepted_duoarea_natural_gas": 52,
-    "duoarea_to_geo_code": 62
+    "duoarea_to_geo_code": 61
   },
   "expected_sorted_first_items": {
     "accepted_duoarea_petroleum_gnd": ["NUS", "R10", "R1X", "R1Y", "R1Z"],
