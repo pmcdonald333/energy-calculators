@@ -68,5 +68,17 @@
   },
   "expected_counts": {
     "geo_display_names": 61
+  },
+  "expected_sorted_first_items": {
+    "geo_display_names": [
+      "AK=Alaska",
+      "AL=Alabama",
+      "AR=Arkansas",
+      "AZ=Arizona",
+      "CA=California"
+    ]
+  },
+  "expected_set_hashes": {
+    "geo_display_names": "__FILL_AFTER_FIRST_RUN__"
   }
 }
