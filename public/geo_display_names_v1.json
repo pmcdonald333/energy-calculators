@@ -79,6 +79,6 @@
     ]
   },
   "expected_set_hashes": {
-    "geo_display_names": "__FILL_AFTER_FIRST_RUN__"
+    "geo_display_names": "REPLACE_WITH_HASH_AFTER_FIRST_RUN"
   }
 }
