@@ -127,7 +127,7 @@
   ],
   "duoarea_to_geo_code": {
     "NUS": "US",
-    
+
     "R10": "R10",
     "R1X": "R1X",
     "R1Y": "R1Y",
@@ -205,7 +205,7 @@
   "expected_set_hashes": {
     "accepted_duoarea_petroleum_gnd": "9c0cc386014dad56039a1b0727ed2b7a4f1cb91414b7bb6ec6405ec65798e91c",
     "accepted_duoarea_petroleum_wfr": "dbec666eacce1ee319c0952544383e3c259321d014c1e381dc99359b6d9f8739",
-   "accepted_duoarea_natural_gas": "2da9166a88db7af87d7ef969d5c8e1981d02a15f1901247af2a4bc9a85aa3ff5",
+    "accepted_duoarea_natural_gas": "2da9166a88db7af87d7ef969d5c8e1981d02a15f1901247af2a4bc9a85aa3ff5",
     "duoarea_to_geo_code": "237cf9e41afccb6da29c478f2fdc6f6d0ab323fcbbad486effd0a6db42fd612a"
   },
   "notes": {
