@@ -3,7 +3,6 @@
   "description": "Canonical frozen display names for UI. The UI must ONLY use these labels (never EIA area-name). Strict validation: no unknown keys.",
   "geo_display_names": {
     "US": "U.S.",
-
     "R10": "PADD 1 (East Coast)",
     "R1X": "PADD 1A (New England)",
     "R1Y": "PADD 1B (Central Atlantic)",
@@ -66,7 +65,7 @@
     "WI": "Wisconsin",
     "WY": "Wyoming"
   },
-  "expected_counts": {
+"expected_counts": {
     "geo_display_names": 61
   },
   "expected_sorted_first_items": {
@@ -75,10 +74,14 @@
       "AL=Alabama",
       "AR=Arkansas",
       "AZ=Arizona",
-      "CA=California"
+      "CA=California",
+      "CO=Colorado",
+      "CT=Connecticut",
+      "DC=District of Columbia",
+      "DE=Delaware",
+      "FL=Florida"
     ]
   },
   "expected_set_hashes": {
-    "geo_display_names": "REPLACE_AFTER_FIRST_RUN"
+    "geo_display_names": "REPLACE_WITH_HASH"
   }
-}
