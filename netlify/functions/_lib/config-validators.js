@@ -9,13 +9,15 @@
 //   1) expected_* objects must have EXACT keys (no extras, no missing)
 //   2) accept-lists must be unique (no duplicates)
 //   3) mapping coverage checks: every accepted duoarea MUST exist in duoarea_to_geo_code
-//      and duoarea_to_geo_code MUST NOT contain extra keys beyond the union of accept-lists + NUS
+//      and duoarea_to_geo_code MUST NOT contain extra keys beyond the union of accept-lists
 //   4) display-names + fallback-map keys must match the canonical geo universe
-//      derived from duoarea_to_geo_code values plus US and region codes
+//      derived from duoarea_to_geo_code values plus US
 //
 // Notes:
 // - This file assumes geo_config_hash.js provides deterministic hashing utilities.
 // - Keep configs in the site root served from /public (so they load at /geo_*.json).
+
+import crypto from "node:crypto";
 
 import {
   hashStringMap,
@@ -63,34 +65,11 @@ function assertUniqueStringArray(arr, context) {
   assert(dups.length === 0, `${context}: duplicate items not allowed: ${dups.join(", ")}`);
 }
 
-function sortedSetHashFromList(list) {
-  // Deterministic hash for a SET represented as a list of strings:
-  // sort ASC, join with \n, sha256 using the sha256() inside geo_config_hash.js via hashStringMap? (No.)
-  // We already lock hashes in the JSON using the same method as before:
-  // sort ASC, join with \n, sha256
-  //
-  // Implemented via a tiny local helper using hashStringMap would be incorrect because hashStringMap expects key=value.
-  // So we compute in-place using a stable algorithm below by reusing crypto via geo_config_hash.js is not available.
-  // Instead: rely on the expected_set_hashes being computed in your build step with THIS algorithm.
-  //
-  // IMPORTANT: To avoid mismatch risk, we keep the original approach you already use elsewhere:
-  //   sort list, join("\n"), sha256
-  // We implement sha256 locally without importing crypto by using WebCrypto in runtime? Netlify node supports crypto,
-  // but for simplicity and to keep consistent with your previous known-good behavior, we will NOT re-implement here.
-  //
-  // Therefore: we do NOT compute list hashes here anymore.
-  // We will compute list hashes by converting the set into a synthetic map index->value and hashing stringMap would change output.
-  // So: KEEP the previous method by importing node:crypto. (Netlify Functions run on Node, so this is safe.)
-  throw new Error(
-    "sortedSetHashFromList should not be called. Use sortedListHash() (implemented below) instead."
-  );
-}
-
-// Keep the exact same list-hash algorithm you’ve already been using successfully.
-import crypto from "node:crypto";
 function sha256Hex(s) {
   return crypto.createHash("sha256").update(s, "utf8").digest("hex");
 }
+
+// Keep the exact same list-hash algorithm you’ve already been using successfully.
 function sortedListHash(list) {
   const sorted = [...list].slice().sort();
   return sha256Hex(sorted.join("\n"));
@@ -157,13 +136,6 @@ function unionSets(...sets) {
   const out = new Set();
   for (const s of sets) for (const v of s) out.add(v);
   return out;
-}
-
-function assertNoUnknownKeysInObject(obj, allowedKeys, context) {
-  assert(isPlainObject(obj), `${context}: expected object`);
-  const allowed = new Set(allowedKeys);
-  const unknown = Object.keys(obj).filter((k) => !allowed.has(k));
-  assert(unknown.length === 0, `${context}: unknown keys: ${unknown.join(", ")}`);
 }
 
 function assertAllValuesInAllowedSet(arr, allowedSet, context) {
@@ -256,7 +228,6 @@ export function validateGeoAcceptListsV1(doc) {
   );
 
   // Tightening: duoarea_to_geo_code must NOT contain extras beyond the union of accepted lists.
-  // (This prevents accidental expansion of the mapping layer without also updating accept-lists.)
   const extraMapKeys = [];
   for (const k of mappingKeys) {
     if (!allAcceptedDuoareas.has(k)) extraMapKeys.push(k);
@@ -345,11 +316,10 @@ export function validateGeoDisplayNamesV1(doc, { geoUniverse }) {
     "geo_display_names_v1: internal error (geoUniverse missing)"
   );
 
-  const nameKeys = Object.keys(doc.geo_display_names);
   const universeArr = toSortedArray(geoUniverse);
   assertExactKeys(doc.geo_display_names, universeArr, "geo_display_names_v1.geo_display_names");
 
-  const actualCounts = { geo_display_names: nameKeys.length };
+  const actualCounts = { geo_display_names: Object.keys(doc.geo_display_names).length };
   const actualHashes = { geo_display_names: hashStringMap(doc.geo_display_names) };
   const sortedLines = firstNSortedLinesFromStringMap(doc.geo_display_names, 999999);
   const actualSortedFirst = { geo_display_names: sortedLines };
@@ -391,7 +361,6 @@ export function validateGeoFallbackMapV1(doc, { geoUniverse }) {
   );
 
   // Tightening: fallback keys must EXACTLY match geoUniverse
-  const fbKeys = Object.keys(doc.fallback_chain_by_geo_code);
   const universeArr = toSortedArray(geoUniverse);
   assertExactKeys(doc.fallback_chain_by_geo_code, universeArr, "geo_fallback_map_v1.fallback_chain_by_geo_code");
 
@@ -406,7 +375,7 @@ export function validateGeoFallbackMapV1(doc, { geoUniverse }) {
     // Must only contain values from geoUniverse
     assertAllValuesInAllowedSet(chain, geoUniverse, `geo_fallback_map_v1 chain for ${geo}`);
 
-    // Must end in US (US itself is special-cased below)
+    // Must end in US
     assert(chain[chain.length - 1] === "US", `geo_fallback_map_v1 chain for ${geo} must end with US`);
   }
 
@@ -418,7 +387,7 @@ export function validateGeoFallbackMapV1(doc, { geoUniverse }) {
     'geo_fallback_map_v1: US chain must be ["US"]'
   );
 
-  const actualCounts = { fallback_chain_by_geo_code: fbKeys.length };
+  const actualCounts = { fallback_chain_by_geo_code: Object.keys(doc.fallback_chain_by_geo_code).length };
   const actualHashes = { fallback_chain_by_geo_code: hashChainMap(doc.fallback_chain_by_geo_code) };
 
   const sortedLines = firstNSortedLinesFromChainMap(doc.fallback_chain_by_geo_code, 999999);
@@ -442,7 +411,10 @@ export function validateGeoFallbackMapV1(doc, { geoUniverse }) {
  * Fetch configs from your site (public/ folder).
  */
 export async function loadAndValidateGeoConfigs({ baseUrl }) {
-  assert(typeof baseUrl === "string" && baseUrl.startsWith("http"), "loadAndValidateGeoConfigs: baseUrl must be http(s) URL");
+  assert(
+    typeof baseUrl === "string" && baseUrl.startsWith("http"),
+    "loadAndValidateGeoConfigs: baseUrl must be http(s) URL"
+  );
 
   const urls = {
     geo_accept_lists_v1: `${baseUrl}/geo_accept_lists_v1.json`,
@@ -474,7 +446,5 @@ export async function loadAndValidateGeoConfigs({ baseUrl }) {
     geo_display_names_v1: namesDoc,
     geo_fallback_map_v1: fbDoc,
     validation: { acceptInfo, namesInfo, fbInfo }
-  };
-}
   };
 }
