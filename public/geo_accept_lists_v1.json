@@ -127,7 +127,8 @@
   ],
   "duoarea_to_geo_code": {
     "NUS": "US",
-
+    "US": "US",
+    
     "R10": "R10",
     "R1X": "R1X",
     "R1Y": "R1Y",
