@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Canonical frozen display names for UI. The UI must ONLY use these labels (never EIA area-name). Strict validation: no unknown keys.",
+  "description": "Canonical frozen display names for UI. DEPLOY_MARKER=2026-01-10-01"
   "geo_display_names": {
     "US": "U.S.",
 
