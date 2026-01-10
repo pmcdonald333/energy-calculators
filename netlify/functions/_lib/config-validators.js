@@ -1,8 +1,29 @@
+import {
+  hashStringMap,
+  hashChainMap,
+  firstNSortedLinesFromStringMap,
+  firstNSortedLinesFromChainMap
+} from "./geo_config_hash.js";
+
 import crypto from "node:crypto";
 
 /**
  * ---------- helpers ----------
  */
+function assertNoUnknownTopLevelKeys(obj, allowedKeys, label) {
+  const allowed = new Set(allowedKeys);
+  const unknown = Object.keys(obj).filter((k) => !allowed.has(k));
+  if (unknown.length) {
+    throw new Error(`${label}: unknown top-level keys: ${unknown.join(", ")}`);
+  }
+}
+function assertNoUnknownTopLevelKeys(obj, allowedKeys, label) {
+  const allowed = new Set(allowedKeys);
+  const unknown = Object.keys(obj).filter((k) => !allowed.has(k));
+  if (unknown.length) {
+    throw new Error(`${label}: unknown top-level keys: ${unknown.join(", ")}`);
+  }
+}
 function sha256Hex(s) {
   return crypto.createHash("sha256").update(s, "utf8").digest("hex");
 }
