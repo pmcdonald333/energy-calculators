@@ -205,7 +205,7 @@
   },
   "expected_set_hashes": {
     "accepted_duoarea_petroleum_gnd": "9c0cc386014dad56039a1b0727ed2b7a4f1cb91414b7bb6ec6405ec65798e91c",
-    "accepted_duoarea_petroleum_wfr": "8a0cddc44bbafc2c063d7fcb5db37fffa5f0c55a70b65d422c5252de5bb63e08",
+    "accepted_duoarea_petroleum_wfr": "dbec666eacce1ee319c0952544383e3c259321d014c1e381dc99359b6d9f8739",
     "accepted_duoarea_natural_gas": "d3dfcd29247c7a4b85055ffcf24a2d27b7d047ed81990698203ba65b784c32b9",
     "duoarea_to_geo_code": "3c7b7dbfd6e6e6e3b0035a7930ae5b4b13f9e0e25cc947b05bd11ea933033ff5"
   },
