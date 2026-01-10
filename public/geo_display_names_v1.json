@@ -1,4 +1,5 @@
 {
+  "__DEPLOY_PROBE__": "hello"
   "schema_version": 1,
   "description": "Canonical frozen display names for UI. The UI must ONLY use these labels (never EIA area-name). Strict validation: no unknown keys.",
   "geo_display_names": {
