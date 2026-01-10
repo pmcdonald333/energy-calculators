@@ -71,6 +71,6 @@
     "HI": ["HI", "R50", "US"]
   },
   "expected_counts": {
-    "fallback_chain_by_geo_code": 60
+    "fallback_chain_by_geo_code": 61
   }
 }
