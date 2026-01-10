@@ -72,5 +72,22 @@
   },
   "expected_counts": {
     "fallback_chain_by_geo_code": 61
+  },
+  "expected_sorted_first_items": {
+    "fallback_chain_by_geo_code": [
+      "AK=AK>R50>US",
+      "AL=AL>R30>US",
+      "AR=AR>R30>US",
+      "AZ=AZ>R50>US",
+      "CA=CA>R50>US",
+      "CO=CO>R40>US",
+      "CT=CT>R10>US",
+      "DC=DC>R10>US",
+      "DE=DE>R10>US",
+      "FL=FL>R10>US"
+    ]
+  },
+  "expected_set_hashes": {
+    "fallback_chain_by_geo_code": "9920c0cf8e7f028d88bc7e14789f7f16d67969bf3e7d2d4cfdd4b67373b18c91"
   }
 }
