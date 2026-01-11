@@ -12,6 +12,7 @@
 // - Never leak api_key (redact in outputs + errors)
 // - Chunk duoarea facet queries to avoid EIA 500s
 // - Retry transient 5xx
+// - Multi-window fallback (26w -> 52w -> 104w) if latest week cannot be determined
 //
 // Tightening:
 // - Latest week chosen from rows with numeric values
@@ -24,12 +25,13 @@
 
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
 
-function jsonResponse(status, obj) {
+function jsonResponse(status, obj, { extraHeaders = {} } = {}) {
   return new Response(JSON.stringify(obj, null, 2), {
     status,
     headers: {
       "content-type": "application/json",
-      "cache-control": "no-store"
+      "cache-control": "no-store",
+      ...extraHeaders
     }
   });
 }
@@ -59,6 +61,7 @@ function toNumberOrNull(v) {
 }
 
 function pickLatestPeriod(rows) {
+  // Period strings are YYYY-MM-DD; lexicographic compare works.
   let best = null;
   for (const r of rows) {
     if (!r?.period) continue;
@@ -98,7 +101,7 @@ async function sleep(ms) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function fetchJsonWithRetry(url, { tries = 3, baseDelayMs = 400 } = {}) {
+async function fetchJsonWithRetry(url, { tries = 4, baseDelayMs = 600 } = {}) {
   let lastText = "";
   for (let attempt = 1; attempt <= tries; attempt++) {
     const res = await fetch(url, { headers: { accept: "application/json" } });
@@ -181,6 +184,24 @@ function dedupeLatestRows(rows) {
   return Array.from(byKey.values());
 }
 
+async function fetchAllChunks({ apiKey, start, duoareas, products, chunkSize }) {
+  const duoareaChunks = chunkArray(duoareas, chunkSize);
+
+  const allRows = [];
+  const urls = [];
+
+  for (const chunk of duoareaChunks) {
+    const url = buildPetroleumGndUrl({ apiKey, duoareas: chunk, products, start });
+    urls.push(url);
+
+    const json = await fetchJsonWithRetry(url, { tries: 4, baseDelayMs: 600 });
+    const rows = Array.isArray(json?.response?.data) ? json.response.data : [];
+    allRows.push(...rows);
+  }
+
+  return { allRows, urls, duoareaChunks };
+}
+
 export default async (request) => {
   try {
     const apiKey = ensureEnv("EIA_API_KEY");
@@ -202,43 +223,62 @@ export default async (request) => {
       label: "transportation-fuels-latest petroleum_gnd"
     });
 
-    const start = startForWeeksBack(26);
-
     const PRODUCTS = ["EPD2DXL0", "EPMR"]; // diesel + gasoline
     const fuelNameByProduct = {
       EPD2DXL0: "Diesel",
       EPMR: "Gasoline"
     };
 
-    // Chunking to avoid EIA 500s
-    const DUOAREA_CHUNK_SIZE = 15;
-    const duoareaChunks = chunkArray(accept.accepted_duoarea_petroleum_gnd, DUOAREA_CHUNK_SIZE);
+    // Smaller chunk size = fewer EIA 500s in practice
+    const DUOAREA_CHUNK_SIZE = 12;
 
-    const allRows = [];
-    const urls = [];
+    // Multi-window fallback if EIA returns no usable numeric values
+    const WEEKS_BACK_CANDIDATES = [26, 52, 104];
 
-    for (const chunk of duoareaChunks) {
-      const url = buildPetroleumGndUrl({ apiKey, duoareas: chunk, products: PRODUCTS, start });
-      urls.push(url);
+    let chosenStart = null;
+    let chosenLatestWeek = null;
+    let chosenRows = [];
+    let chosenUrls = [];
+    let chosenChunks = [];
 
-      const json = await fetchJsonWithRetry(url, { tries: 3, baseDelayMs: 450 });
-      const rows = Array.isArray(json?.response?.data) ? json.response.data : [];
-      allRows.push(...rows);
+    for (const weeksBack of WEEKS_BACK_CANDIDATES) {
+      const start = startForWeeksBack(weeksBack);
+
+      const { allRows, urls, duoareaChunks } = await fetchAllChunks({
+        apiKey,
+        start,
+        duoareas: accept.accepted_duoarea_petroleum_gnd,
+        products: PRODUCTS,
+        chunkSize: DUOAREA_CHUNK_SIZE
+      });
+
+      const prs = allRows.filter((r) => r && r.process === "PRS" && PRODUCTS.includes(r.product));
+      const prsWithValue = prs.filter((r) => toNumberOrNull(r?.value) !== null);
+
+      const latestWeek = pickLatestPeriod(prsWithValue);
+
+      if (latestWeek) {
+        chosenStart = start;
+        chosenLatestWeek = latestWeek;
+        chosenRows = prs.filter((r) => String(r.period) === latestWeek);
+        chosenUrls = urls;
+        chosenChunks = duoareaChunks;
+        break;
+      }
     }
 
-    const prs = allRows.filter((r) => r && r.process === "PRS" && PRODUCTS.includes(r.product));
-
-    // Latest week chosen from rows with numeric values
-    const prsWithValue = prs.filter((r) => toNumberOrNull(r?.value) !== null);
-    const latestWeek = pickLatestPeriod(prsWithValue);
-    if (!latestWeek) {
-      throw new Error(`EIA_GND_NO_DATA: could not determine latest weekly period (start=${start})`);
+    if (!chosenLatestWeek) {
+      // Keep message short; include last attempted start
+      const lastStart = startForWeeksBack(WEEKS_BACK_CANDIDATES[WEEKS_BACK_CANDIDATES.length - 1]);
+      throw new Error(
+        `EIA_GND_NO_DATA: could not determine latest weekly period (tried starts: ${WEEKS_BACK_CANDIDATES
+          .map((w) => startForWeeksBack(w))
+          .join(", ")}; last=${lastStart})`
+      );
     }
-
-    const latestRows = prs.filter((r) => String(r.period) === latestWeek);
 
     const out = [];
-    for (const r of latestRows) {
+    for (const r of chosenRows) {
       const duoarea = String(r.duoarea).trim();
       const geo_code = duoToGeo[duoarea] || null;
       if (!geo_code) continue;
@@ -247,9 +287,9 @@ export default async (request) => {
       const fuel = (fuelNameByProduct[product] || product).trim();
 
       out.push({
-        dataset: "transportation_fuels_latest",     // ✅ required by UI keying
-        fuel,                                      // ✅ "Diesel" / "Gasoline"
-        sector: "Residential",                     // ✅ required by UI keying
+        dataset: "transportation_fuels_latest",
+        fuel,
+        sector: "Residential",
         geo_code,
         geo_display_name: (names[geo_code] || geo_code).trim(),
         period: String(r.period).trim(),
@@ -273,13 +313,12 @@ export default async (request) => {
     return jsonResponse(200, {
       ok: true,
       generated_at: new Date().toISOString(),
-      latest: { petroleum_week: latestWeek },
-      windows: { petroleum_start: start },
-      sources: { petroleum_gnd_urls: urls.map(redactApiKeyFromUrlString) },
+      latest: { petroleum_week: chosenLatestWeek },
+      windows: { petroleum_start: chosenStart },
+      sources: { petroleum_gnd_urls: chosenUrls.map(redactApiKeyFromUrlString) },
       counts: {
-        petroleum_chunks: duoareaChunks.length,
-        petroleum_rows_fetched_total: allRows.length,
-        petroleum_rows_latest_period: latestRows.length,
+        petroleum_chunks: chosenChunks.length,
+        petroleum_rows_latest_period: chosenRows.length,
         output_rows: deduped.length
       },
       rows: deduped
