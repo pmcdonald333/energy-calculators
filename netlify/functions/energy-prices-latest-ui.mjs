@@ -1,21 +1,34 @@
 // netlify/functions/energy-prices-latest-ui.mjs
 //
-// Step 5: UI-optimized compact matrix built from energy-prices-latest-with-fallback.
+// Step 6: Production hardening for UI endpoint:
+// - Deterministic output ordering (stable ETag)
+// - ETag support (If-None-Match -> 304)
+// - Cache-Control tuned for CDN + SWR
 //
-// Output:
-// - meta: generated_at + latest + windows
-// - geos: [{ geo_code, geo_display_name }]
-// - fuels: [{ fuel_key, dataset, fuel, sector }]
-// - values: values[fuel_key][geo_code] = { price, units, period, is_fallback, fallback_from_geo_code }
+// Still built from energy-prices-latest-with-fallback.
 
+import crypto from "node:crypto";
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
 
-function jsonResponse(status, obj) {
+function sha256Hex(s) {
+  return crypto.createHash("sha256").update(s, "utf8").digest("hex");
+}
+
+function jsonResponse(status, obj, { extraHeaders = {} } = {}) {
   return new Response(JSON.stringify(obj, null, 2), {
     status,
     headers: {
       "content-type": "application/json",
-      "cache-control": "no-store"
+      ...extraHeaders
+    }
+  });
+}
+
+function response304({ extraHeaders = {} } = {}) {
+  return new Response(null, {
+    status: 304,
+    headers: {
+      ...extraHeaders
     }
   });
 }
@@ -49,6 +62,14 @@ function makeFuelKey(dataset, fuel, sector) {
   return `${dataset}::${fuel}::${sector}`;
 }
 
+function normalizeIfNoneMatch(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  // Some proxies send multiple etags separated by commas
+  return s.split(",")[0].trim();
+}
+
 export default async (request) => {
   try {
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
@@ -58,30 +79,31 @@ export default async (request) => {
       );
     }
 
-    // Load geo configs (display names + canonical geo universe via fallback map keys)
+    // Locked geo configs
     const cfg = await loadAndValidateGeoConfigs({ baseUrl });
     const names = cfg.geo_display_names_v1.geo_display_names;
     const fallbackChains = cfg.geo_fallback_map_v1.fallback_chain_by_geo_code;
 
-    // Canonical geo list (61)
+    // Canonical geo list (61), deterministic
     const geoCodes = Object.keys(fallbackChains).slice().sort(stableSortStrings);
     const geos = geoCodes.map((geo_code) => ({
       geo_code,
       geo_display_name: names[geo_code] || geo_code
     }));
 
-    // Pull the filled output from step 4
+    // Pull step 4 output
     const srcUrl = `${baseUrl}/.netlify/functions/energy-prices-latest-with-fallback`;
     const src = await fetchJsonOrThrow(srcUrl);
 
     if (!src?.ok) {
-      throw new Error(`energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`);
+      throw new Error(
+        `energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`
+      );
     }
 
     const rows = Array.isArray(src?.rows_filled) ? src.rows_filled : [];
 
-    // Fixed stable UI fuel order (based on what you’re actually shipping: combos=5)
-    // NOTE: This is intentionally explicit so the UI ordering never changes.
+    // Fixed stable UI fuel order (combos=5)
     const CANONICAL_FUELS = [
       { dataset: "heating_fuels_latest", fuel: "Heating Oil", sector: "Residential" },
       { dataset: "heating_fuels_latest", fuel: "Propane", sector: "Residential" },
@@ -99,7 +121,7 @@ export default async (request) => {
 
     const fuelKeys = fuels.map((f) => f.fuel_key);
 
-    // Determine best period per fuel_key (should be one, but we’ll compute defensively)
+    // Determine best period per fuel_key (defensive)
     const bestPeriodByFuelKey = new Map();
     for (const r of rows) {
       const dataset = r?.dataset ? String(r.dataset) : null;
@@ -113,7 +135,7 @@ export default async (request) => {
       if (!prev || period > prev) bestPeriodByFuelKey.set(fk, period);
     }
 
-    // Initialize values matrix with null defaults (ensures every geo exists for every fuel)
+    // Initialize matrix
     const values = {};
     for (const fk of fuelKeys) {
       values[fk] = {};
@@ -128,7 +150,7 @@ export default async (request) => {
       }
     }
 
-    // Fill matrix using rows_filled, but only for each fuel_key’s best period
+    // Fill matrix using only each fuel_key’s best period
     for (const r of rows) {
       const dataset = r?.dataset ? String(r.dataset) : null;
       const fuel = r?.fuel ? String(r.fuel) : null;
@@ -139,7 +161,7 @@ export default async (request) => {
       if (!dataset || !fuel || !sector || !geo || !period) continue;
 
       const fk = makeFuelKey(dataset, fuel, sector);
-      if (!values[fk]) continue; // ignore anything outside the canonical 5 fuels
+      if (!values[fk]) continue;
 
       const targetPeriod = bestPeriodByFuelKey.get(fk);
       if (targetPeriod && period !== targetPeriod) continue;
@@ -153,7 +175,8 @@ export default async (request) => {
       };
     }
 
-    return jsonResponse(200, {
+    // Build deterministic response body (important for stable ETag)
+    const body = {
       ok: true,
       meta: {
         generated_at: new Date().toISOString(),
@@ -170,8 +193,45 @@ export default async (request) => {
       geos,
       fuels,
       values
+    };
+
+    // ETag based on content EXCEPT generated_at (so it stays stable)
+    // We compute a copy with generated_at removed.
+    const etagPayload = {
+      ...body,
+      meta: {
+        ...body.meta,
+        generated_at: null
+      }
+    };
+
+    const etag = `"${sha256Hex(JSON.stringify(etagPayload))}"`;
+    const inm = normalizeIfNoneMatch(request.headers.get("if-none-match"));
+
+    // Cache headers:
+    // - CDN caches for 5 minutes
+    // - allow stale for 1 hour while revalidating
+    const cacheControl = "public, max-age=0, s-maxage=300, stale-while-revalidate=3600";
+
+    if (inm && inm === etag) {
+      return response304({
+        extraHeaders: {
+          etag,
+          "cache-control": cacheControl
+        }
+      });
+    }
+
+    return jsonResponse(200, body, {
+      extraHeaders: {
+        etag,
+        "cache-control": cacheControl
+      }
     });
   } catch (err) {
-    return jsonResponse(500, { ok: false, error: String(err?.message || err) });
+    // Keep errors uncacheable
+    return jsonResponse(500, { ok: false, error: String(err?.message || err) }, {
+      extraHeaders: { "cache-control": "no-store" }
+    });
   }
 };
