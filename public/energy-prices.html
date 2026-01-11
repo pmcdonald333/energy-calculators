@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Energy Prices (Latest)</title>
+    <meta name="robots" content="noindex, nofollow" />
+
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        margin: 16px;
+        line-height: 1.35;
+      }
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      select, button {
+        font: inherit;
+        padding: 6px 10px;
+      }
+      .meta {
+        font-size: 14px;
+        opacity: 0.85;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-top: 12px;
+      }
+      th, td {
+        border: 1px solid rgba(0,0,0,0.12);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: rgba(0,0,0,0.04);
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid rgba(0,0,0,0.15);
+      }
+      .pill.ok {
+        background: rgba(0, 200, 0, 0.08);
+      }
+      .pill.fb {
+        background: rgba(255, 165, 0, 0.12);
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+      }
+      .error {
+        padding: 10px 12px;
+        border: 1px solid rgba(255,0,0,0.25);
+        background: rgba(255,0,0,0.06);
+        border-radius: 8px;
+        margin-top: 12px;
+        white-space: pre-wrap;
+      }
+      .small {
+        font-size: 12px;
+        opacity: 0.85;
+      }
+    </style>
+  </head>
+
+  <body>
+    <header>
+      <div class="row">
+        <h2 style="margin:0;">Energy Prices (Latest)</h2>
+        <span id="statusPill" class="pill">loading…</span>
+      </div>
+
+      <div class="row">
+        <label>
+          Fuel:
+          <select id="fuelSelect"></select>
+        </label>
+
+        <button id="refreshBtn" type="button">Refresh</button>
+
+        <span class="meta">
+          Source:
+          <span class="mono">/api/energy_prices_latest_ui.json</span>
+        </span>
+      </div>
+
+      <div class="meta">
+        Generated at: <span class="mono" id="generatedAt">—</span>
+        <span class="small">(this is the function timestamp; caching may serve older data within TTL)</span>
+      </div>
+
+      <div id="errorBox" class="error" style="display:none;"></div>
+    </header>
+
+    <main>
+      <table>
+        <thead>
+          <tr>
+            <th>Geo</th>
+            <th>Price</th>
+            <th>Units</th>
+            <th>Period</th>
+            <th>Direct/Fallback</th>
+            <th>Fallback From</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </main>
+
+    <script type="module" src="/energy-prices.js"></script>
+  </body>
+</html>
