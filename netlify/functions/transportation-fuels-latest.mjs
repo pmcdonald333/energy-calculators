@@ -242,15 +242,14 @@ export default async (request) => {
 
       out.push({
         fuel: fuelNameByProduct[String(r.product)] || String(r.product),
-        sector: null, // Transportation fuels are not PRS-residential
+        sector: null,
         geo_code,
         geo_display_name: names[geo_code] || geo_code,
         period: String(r.period),
         price: toNumberOrNull(r.value),
-        price_units: r.units || null, // typically $/GAL
+        price_units: r.units || null,
         source_route: "petroleum/pri/gnd (weekly)",
-        source_series: r.series || null,
-        source_process: r.process || null // keep for debugging if EIA includes it
+        source_series: r.series || null
       });
     }
 
