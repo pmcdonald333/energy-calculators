@@ -62,12 +62,41 @@ function makeFuelKey(dataset, fuel, sector) {
   return `${dataset}::${fuel}::${sector}`;
 }
 
+/**
+ * Netlify (and some proxies) may decorate ETags, e.g.:
+ *   "abc123...-df"
+ * Or use weak etags:
+ *   W/"abc123..."
+ *
+ * We compute our own strong ETag as a pure hex hash. For conditional requests,
+ * accept either exact match or a decorated variant by comparing ONLY the base
+ * token (before the first "-"), with weak prefix/quotes stripped.
+ */
+function normalizeEtagToken(v) {
+  if (!v) return null;
+  let s = String(v).trim();
+  if (!s) return null;
+
+  // Weak ETag: W/"..."
+  if (s.startsWith("W/")) s = s.slice(2).trim();
+
+  // Strip surrounding quotes if present
+  if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+
+  // If Netlify appends "-df" or similar, compare only the base part.
+  // (Our hash is hex, so base part is what we care about.)
+  const base = s.split("-")[0];
+  return base || null;
+}
+
 function normalizeIfNoneMatch(v) {
   if (!v) return null;
   const s = String(v).trim();
   if (!s) return null;
-  // Some proxies send multiple etags separated by commas
-  return s.split(",")[0].trim();
+
+  // If-None-Match can be a comma-separated list
+  const first = s.split(",")[0].trim();
+  return normalizeEtagToken(first);
 }
 
 export default async (request) => {
@@ -196,7 +225,6 @@ export default async (request) => {
     };
 
     // ETag based on content EXCEPT generated_at (so it stays stable)
-    // We compute a copy with generated_at removed.
     const etagPayload = {
       ...body,
       meta: {
@@ -205,15 +233,17 @@ export default async (request) => {
       }
     };
 
-    const etag = `"${sha256Hex(JSON.stringify(etagPayload))}"`;
-    const inm = normalizeIfNoneMatch(request.headers.get("if-none-match"));
+    const etagBase = sha256Hex(JSON.stringify(etagPayload));
+    const etag = `"${etagBase}"`;
+
+    const inmBase = normalizeIfNoneMatch(request.headers.get("if-none-match"));
 
     // Cache headers:
     // - CDN caches for 5 minutes
     // - allow stale for 1 hour while revalidating
     const cacheControl = "public, max-age=0, s-maxage=300, stale-while-revalidate=3600";
 
-    if (inm && inm === etag) {
+    if (inmBase && inmBase === etagBase) {
       return response304({
         extraHeaders: {
           etag,
@@ -230,8 +260,10 @@ export default async (request) => {
     });
   } catch (err) {
     // Keep errors uncacheable
-    return jsonResponse(500, { ok: false, error: String(err?.message || err) }, {
-      extraHeaders: { "cache-control": "no-store" }
-    });
+    return jsonResponse(
+      500,
+      { ok: false, error: String(err?.message || err) },
+      { extraHeaders: { "cache-control": "no-store" } }
+    );
   }
 };
