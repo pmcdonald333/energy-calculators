@@ -56,7 +56,9 @@ async function fetchJsonOrThrow(url) {
   if (!res.ok) {
     // If upstream is JSON with ok=false, bubble that error explicitly
     if (parsed && typeof parsed === "object" && parsed.ok === false && parsed.error) {
-      throw new Error(`Internal fetch failed (${res.status}) for ${url}. Upstream error: ${parsed.error}`);
+      throw new Error(
+        `Internal fetch failed (${res.status}) for ${url}. Upstream error: ${parsed.error}`
+      );
     }
     throw new Error(`Internal fetch failed (${res.status}) for ${url}. Body: ${text.slice(0, 2000)}`);
   }
@@ -71,7 +73,6 @@ async function fetchJsonOrThrow(url) {
   }
 
   return parsed;
-}
 }
 
 function stableSortStrings(a, b) {
@@ -104,7 +105,6 @@ function normalizeEtagToken(v) {
   if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
 
   // If Netlify appends "-df" or similar, compare only the base part.
-  // (Our hash is hex, so base part is what we care about.)
   const base = s.split("-")[0];
   return base || null;
 }
@@ -123,9 +123,7 @@ export default async (request) => {
   try {
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
     if (!baseUrl) {
-      throw new Error(
-        "Could not determine baseUrl (process.env.URL missing and request origin unavailable)."
-      );
+      throw new Error("Could not determine baseUrl (process.env.URL missing and request origin unavailable).");
     }
 
     // Locked geo configs
@@ -145,9 +143,7 @@ export default async (request) => {
     const src = await fetchJsonOrThrow(srcUrl);
 
     if (!src?.ok) {
-      throw new Error(
-        `energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`
-      );
+      throw new Error(`energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`);
     }
 
     const rows = Array.isArray(src?.rows_filled) ? src.rows_filled : [];
@@ -258,9 +254,6 @@ export default async (request) => {
 
     const inmBase = normalizeIfNoneMatch(request.headers.get("if-none-match"));
 
-    // Cache headers:
-    // - CDN caches for 5 minutes
-    // - allow stale for 1 hour while revalidating
     const cacheControl = "public, max-age=0, s-maxage=300, stale-while-revalidate=3600";
 
     if (inmBase && inmBase === etagBase) {
@@ -279,7 +272,6 @@ export default async (request) => {
       }
     });
   } catch (err) {
-    // Keep errors uncacheable
     return jsonResponse(
       500,
       { ok: false, error: String(err?.message || err) },
