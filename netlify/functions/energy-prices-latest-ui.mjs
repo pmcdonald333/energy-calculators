@@ -44,14 +44,34 @@ function originFromRequest(req) {
 async function fetchJsonOrThrow(url) {
   const res = await fetch(url, { headers: { accept: "application/json" } });
   const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new Error(`Internal fetch failed (${res.status}) for ${url}. Body: ${text.slice(0, 200)}`);
-  }
+
+  // Try JSON first so we can preserve upstream ok=false errors
+  let parsed = null;
   try {
-    return JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
-    throw new Error(`Internal fetch returned invalid JSON for ${url}. Body: ${text.slice(0, 200)}`);
+    parsed = null;
   }
+
+  if (!res.ok) {
+    // If upstream is JSON with ok=false, bubble that error explicitly
+    if (parsed && typeof parsed === "object" && parsed.ok === false && parsed.error) {
+      throw new Error(`Internal fetch failed (${res.status}) for ${url}. Upstream error: ${parsed.error}`);
+    }
+    throw new Error(`Internal fetch failed (${res.status}) for ${url}. Body: ${text.slice(0, 2000)}`);
+  }
+
+  if (!parsed) {
+    throw new Error(`Internal fetch returned invalid JSON for ${url}. Body: ${text.slice(0, 2000)}`);
+  }
+
+  // If upstream is ok=false but still returned 200, treat as failure
+  if (parsed.ok === false && parsed.error) {
+    throw new Error(`Internal fetch ok=false for ${url}. Upstream error: ${parsed.error}`);
+  }
+
+  return parsed;
+}
 }
 
 function stableSortStrings(a, b) {
