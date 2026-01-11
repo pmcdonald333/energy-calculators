@@ -24,3 +24,7 @@ status = 200
 from = "/api/electricity_rates_latest.json"
 to = "/.netlify/functions/electricity-rates"
 status = 200
+[[redirects]]
+from = "/api/heating_fuels_latest.json"
+to = "/.netlify/functions/heating-fuels-latest"
+status = 200
