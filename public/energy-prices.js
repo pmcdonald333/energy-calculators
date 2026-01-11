@@ -1,166 +1,222 @@
-const API_URL = "/api/energy_prices_latest_ui.json";
+// public/energy-prices.js
+//
+// UI for /energy-prices.html
+// Reads: /api/energy_prices_latest_ui.json
+// Renders a matrix by (fuel_key x geo_code).
+//
+// Fixes:
+// - Always populate fuel dropdown from data.fuels
+// - Always select a valid default fuel_key
+// - Render safely even if some cells are missing
 
-const elFuelSelect = document.getElementById("fuelSelect");
-const elTbody = document.getElementById("tbody");
-const elGeneratedAt = document.getElementById("generatedAt");
-const elErrorBox = document.getElementById("errorBox");
-const elStatusPill = document.getElementById("statusPill");
-const elRefreshBtn = document.getElementById("refreshBtn");
+const API_PATH = "/api/energy_prices_latest_ui.json";
 
-let state = {
-  data: null,
-  selectedFuelKey: null
-};
+const fuelSelect = document.getElementById("fuelSelect");
+const refreshBtn = document.getElementById("refreshBtn");
+const tbody = document.getElementById("tbody");
+const generatedAt = document.getElementById("generatedAt");
+const statusPill = document.getElementById("statusPill");
+const errorBox = document.getElementById("errorBox");
 
-function setStatus(text, kind = "info") {
-  elStatusPill.textContent = text;
-  elStatusPill.className = "pill " + (kind === "ok" ? "ok" : kind === "fb" ? "fb" : "");
-}
-
-function showError(msg) {
-  elErrorBox.style.display = "block";
-  elErrorBox.textContent = msg;
+function setError(message) {
+  errorBox.style.display = "block";
+  errorBox.textContent = message;
 }
 
 function clearError() {
-  elErrorBox.style.display = "none";
-  elErrorBox.textContent = "";
+  errorBox.style.display = "none";
+  errorBox.textContent = "";
 }
 
-function fmtPrice(v) {
-  if (v === null || v === undefined) return "—";
-  if (typeof v !== "number") return String(v);
-  // keep readable but stable
-  return v.toFixed(3).replace(/\.?0+$/, (m) => (m === "." ? "" : ""));
+function setStatus(ok, fallbackCount, totalGeos) {
+  statusPill.classList.remove("ok", "fb");
+  if (!ok) {
+    statusPill.textContent = "error";
+    return;
+  }
+
+  const fb = Number.isFinite(fallbackCount) ? fallbackCount : 0;
+  const total = Number.isFinite(totalGeos) ? totalGeos : 0;
+
+  // If there are fallbacks, highlight as fb; otherwise ok
+  statusPill.classList.add(fb > 0 ? "fb" : "ok");
+  statusPill.textContent = `ok (${fb} fallback)`;
 }
 
-function safeString(v) {
-  return v === null || v === undefined ? "" : String(v);
+function esc(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function dashIfNull(v) {
+  return v === null || v === undefined || v === "" ? "—" : String(v);
 }
 
 function buildFuelOptions(fuels) {
-  elFuelSelect.innerHTML = "";
+  fuelSelect.innerHTML = "";
+
   for (const f of fuels) {
     const opt = document.createElement("option");
     opt.value = f.fuel_key;
+    // label: "Heating Oil (heating_fuels_latest)" etc.
     opt.textContent = `${f.fuel} (${f.dataset})`;
-    elFuelSelect.appendChild(opt);
+    fuelSelect.appendChild(opt);
   }
 }
 
-function renderTable() {
-  const data = state.data;
-  if (!data) return;
+function ensureValidSelectedFuelKey(data) {
+  const fuels = Array.isArray(data?.fuels) ? data.fuels : [];
+  if (fuels.length === 0) throw new Error("UI: data.fuels is missing or empty.");
 
-  const fk = state.selectedFuelKey || (data.fuels?.[0]?.fuel_key ?? null);
-  if (!fk) return;
+  // If nothing selected or selected key not present in values, choose first
+  const current = fuelSelect.value;
+  const hasValuesForCurrent =
+    current && data?.values && Object.prototype.hasOwnProperty.call(data.values, current);
 
-  const valuesForFuel = data.values?.[fk];
-  if (!valuesForFuel) return;
+  if (!hasValuesForCurrent) {
+    fuelSelect.value = fuels[0].fuel_key;
+  }
 
-  const rows = [];
-  for (const g of data.geos) {
+  // Still invalid? hard fail
+  const chosen = fuelSelect.value;
+  if (!chosen || !data?.values || !Object.prototype.hasOwnProperty.call(data.values, chosen)) {
+    throw new Error("UI: could not select a valid fuel_key (values missing for selection).");
+  }
+
+  return chosen;
+}
+
+function computeFallbackCountForFuel(data, fuelKey) {
+  const geos = Array.isArray(data?.geos) ? data.geos : [];
+  const cellMap = data?.values?.[fuelKey] || {};
+  let fb = 0;
+
+  for (const g of geos) {
     const geo = g.geo_code;
-    const cell = valuesForFuel[geo] || null;
-
-    rows.push({
-      geo_code: geo,
-      geo_display_name: g.geo_display_name,
-      price: cell?.price ?? null,
-      units: cell?.units ?? null,
-      period: cell?.period ?? null,
-      is_fallback: cell?.is_fallback ?? true,
-      fallback_from_geo_code: cell?.fallback_from_geo_code ?? null
-    });
+    const cell = cellMap?.[geo];
+    if (!cell) {
+      // if missing, treat as fallback/missing
+      fb++;
+      continue;
+    }
+    if (cell.is_fallback) fb++;
   }
-
-  elTbody.innerHTML = "";
-  for (const r of rows) {
-    const tr = document.createElement("tr");
-
-    const tdGeo = document.createElement("td");
-    tdGeo.innerHTML = `<div><strong>${r.geo_display_name}</strong></div><div class="mono">${r.geo_code}</div>`;
-    tr.appendChild(tdGeo);
-
-    const tdPrice = document.createElement("td");
-    tdPrice.textContent = fmtPrice(r.price);
-    tr.appendChild(tdPrice);
-
-    const tdUnits = document.createElement("td");
-    tdUnits.textContent = safeString(r.units) || "—";
-    tr.appendChild(tdUnits);
-
-    const tdPeriod = document.createElement("td");
-    tdPeriod.textContent = safeString(r.period) || "—";
-    tr.appendChild(tdPeriod);
-
-    const tdDF = document.createElement("td");
-    const pill = document.createElement("span");
-    pill.className = "pill " + (r.is_fallback ? "fb" : "ok");
-    pill.textContent = r.is_fallback ? "fallback" : "direct";
-    tdDF.appendChild(pill);
-    tr.appendChild(tdDF);
-
-    const tdFrom = document.createElement("td");
-    tdFrom.textContent = r.is_fallback ? (safeString(r.fallback_from_geo_code) || "—") : "—";
-    tdFrom.className = "mono";
-    tr.appendChild(tdFrom);
-
-    elTbody.appendChild(tr);
-  }
-
-  // status pill: show if there are any fallback rows
-  const fallbackCount = rows.filter((x) => x.is_fallback).length;
-  if (fallbackCount > 0) setStatus(`ok (${fallbackCount} fallback)`, "fb");
-  else setStatus("ok (all direct)", "ok");
+  return { fallbackCount: fb, totalGeos: geos.length };
 }
 
-async function load() {
-  clearError();
-  setStatus("loading…");
+function renderTable(data, fuelKey) {
+  const geos = Array.isArray(data?.geos) ? data.geos : [];
+  const cellMap = data?.values?.[fuelKey] || {};
+
+  const rowsHtml = geos
+    .map((g) => {
+      const geo = g.geo_code;
+      const name = g.geo_display_name || geo;
+
+      const cell = cellMap?.[geo] || null;
+
+      const price = cell ? cell.price : null;
+      const units = cell ? cell.units : null;
+      const period = cell ? cell.period : null;
+
+      const isFallback = cell ? !!cell.is_fallback : true;
+      const fbFrom = cell ? cell.fallback_from_geo_code : null;
+
+      const df = isFallback ? "fallback" : "direct";
+
+      return `
+        <tr>
+          <td>${esc(name)}<div class="mono">${esc(geo)}</div></td>
+          <td>${esc(dashIfNull(price))}</td>
+          <td>${esc(dashIfNull(units))}</td>
+          <td>${esc(dashIfNull(period))}</td>
+          <td>${esc(df)}</td>
+          <td>${esc(isFallback ? dashIfNull(fbFrom) : "—")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  tbody.innerHTML = rowsHtml;
+}
+
+async function fetchUiJson({ bustCache = false } = {}) {
+  const url = bustCache ? `${API_PATH}?t=${Date.now()}` : API_PATH;
+
+  const res = await fetch(url, {
+    headers: { accept: "application/json" },
+    // browser-side hint; Netlify edge may still serve cache within TTL (that's OK)
+    cache: "no-store"
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Fetch failed (${res.status}) for ${url}\n\n${text.slice(0, 500)}`);
+  }
 
   try {
-    // IMPORTANT: Do NOT add cache-busting query params. We want CDN + ETag behavior.
-    const res = await fetch(API_URL, {
-      headers: { accept: "application/json" }
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Fetch failed (${res.status}). Body: ${text.slice(0, 200)}`);
-    }
-
-    const json = await res.json();
-
-    if (!json?.ok) {
-      throw new Error(`API ok=false: ${String(json?.error || "unknown error")}`);
-    }
-
-    state.data = json;
-
-    elGeneratedAt.textContent = safeString(json?.meta?.generated_at) || "—";
-
-    buildFuelOptions(json.fuels || []);
-    if (!state.selectedFuelKey) {
-      state.selectedFuelKey = json.fuels?.[0]?.fuel_key ?? null;
-      elFuelSelect.value = state.selectedFuelKey || "";
-    }
-
-    renderTable();
+    return JSON.parse(text);
   } catch (e) {
-    setStatus("error");
-    showError(String(e?.message || e));
+    throw new Error(`Invalid JSON from ${url}\n\n${text.slice(0, 500)}`);
   }
 }
 
-elFuelSelect.addEventListener("change", () => {
-  state.selectedFuelKey = elFuelSelect.value;
-  renderTable();
+function setGeneratedAt(data) {
+  const ga = data?.meta?.generated_at || null;
+  generatedAt.textContent = ga ? String(ga) : "—";
+}
+
+async function loadAndRender({ bustCache = false } = {}) {
+  clearError();
+  statusPill.textContent = "loading…";
+  statusPill.classList.remove("ok", "fb");
+
+  const data = await fetchUiJson({ bustCache });
+
+  setGeneratedAt(data);
+
+  const fuels = Array.isArray(data?.fuels) ? data.fuels : [];
+  if (fuels.length === 0) throw new Error("UI: fuels[] empty in response.");
+
+  // Always rebuild dropdown from server response (keeps in sync)
+  buildFuelOptions(fuels);
+
+  // Force valid selection
+  const fuelKey = ensureValidSelectedFuelKey(data);
+
+  // Render
+  renderTable(data, fuelKey);
+
+  // Status pill
+  const { fallbackCount, totalGeos } = computeFallbackCountForFuel(data, fuelKey);
+  setStatus(true, fallbackCount, totalGeos);
+}
+
+fuelSelect.addEventListener("change", async () => {
+  try {
+    // Don’t refetch; just reload + re-render from API to be safe and simple
+    await loadAndRender({ bustCache: false });
+  } catch (e) {
+    setStatus(false);
+    setError(String(e?.message || e));
+  }
 });
 
-elRefreshBtn.addEventListener("click", () => {
-  // This triggers a normal fetch; CDN may still serve cached until revalidation.
-  load();
+refreshBtn.addEventListener("click", async () => {
+  try {
+    await loadAndRender({ bustCache: true });
+  } catch (e) {
+    setStatus(false);
+    setError(String(e?.message || e));
+  }
 });
 
-load();
+// Initial load
+loadAndRender({ bustCache: false }).catch((e) => {
+  setStatus(false);
+  setError(String(e?.message || e));
+});
