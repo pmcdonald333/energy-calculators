@@ -40,3 +40,7 @@ status = 200
 from = "/api/energy_prices_latest_with_fallback.json"
 to = "/.netlify/functions/energy-prices-latest-with-fallback"
 status = 200
+[[redirects]]
+from = "/api/energy_prices_latest_ui.json"
+to = "/.netlify/functions/energy-prices-latest-ui"
+status = 200
