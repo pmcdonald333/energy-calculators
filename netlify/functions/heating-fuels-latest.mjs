@@ -9,12 +9,9 @@
 // - geo_display_names_v1.json
 // - geo_fallback_map_v1.json
 //
-// Returns a compact normalized response keyed by geo_code.
-//
-// Tightening additions (runtime):
-//  1) FAIL if latest period cannot be determined (empty dataset)
-//  2) FAIL if any accepted duoarea is missing from duoarea_to_geo_code mapping
-//  3) Query PRS + relevant products at the API level (less data, fewer surprises)
+// IMPORTANT:
+// - Do NOT leak api_key in returned payloads (we redact it).
+// - Use rolling time windows so "latest" is truly latest.
 
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
 
@@ -78,8 +75,35 @@ function assertMappingCoverage({ acceptedDuoareas, duoToGeo, label }) {
     if (!duoToGeo[d]) missing.push(d);
   }
   if (missing.length) {
-    throw new Error(`CONFIG_VALIDATION_FAILED: ${label}: duoarea_to_geo_code missing keys: ${missing.join(", ")}`);
+    throw new Error(
+      `CONFIG_VALIDATION_FAILED: ${label}: duoarea_to_geo_code missing keys: ${missing.join(", ")}`
+    );
   }
+}
+
+function redactApiKey(url) {
+  // Prevent leaking secrets in your response payload.
+  const u = new URL(url);
+  if (u.searchParams.has("api_key")) u.searchParams.set("api_key", "REDACTED");
+  return u.toString();
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function startForWeeksBack(weeksBack) {
+  // returns YYYY-MM-DD
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - weeksBack * 7);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
+function startForMonthsBack(monthsBack) {
+  // returns YYYY-MM
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - monthsBack);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}`;
 }
 
 // --- EIA query builders (kept explicit + deterministic) ---
@@ -100,13 +124,11 @@ function buildPetroleumWfrUrl({ apiKey, acceptedDuoareas, start }) {
   params.append("facets[product][]", "EPD2F");
   params.append("facets[product][]", "EPLLPA");
 
-  // duoareas (explicit accept-list)
   for (const d of acceptedDuoareas) params.append("facets[duoarea][]", d);
 
-  // start date
-  params.set("start", start); // e.g., "2025-10-01"
+  params.set("start", start); // YYYY-MM-DD
 
-  // deterministic sorting (latest first, stable grouping)
+  // deterministic sorting
   params.set("sort[0][column]", "period");
   params.set("sort[0][direction]", "desc");
   params.set("sort[1][column]", "duoarea");
@@ -114,7 +136,6 @@ function buildPetroleumWfrUrl({ apiKey, acceptedDuoareas, start }) {
   params.set("sort[2][column]", "product");
   params.set("sort[2][direction]", "asc");
 
-  // large enough
   params.set("offset", "0");
   params.set("length", "5000");
   return `${base}?${params.toString()}`;
@@ -133,7 +154,8 @@ function buildNaturalGasSumUrl({ apiKey, acceptedDuoareas, start }) {
   params.append("facets[process][]", "PRS");
 
   for (const d of acceptedDuoareas) params.append("facets[duoarea][]", d);
-  params.set("start", start); // e.g., "2025-10"
+
+  params.set("start", start); // YYYY-MM
 
   params.set("sort[0][column]", "period");
   params.set("sort[0][direction]", "desc");
@@ -151,7 +173,6 @@ export default async (request) => {
   try {
     const apiKey = ensureEnv("EIA_API_KEY");
 
-    // Base URL for loading /geo_*.json from your published site root.
     const baseUrl =
       process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
 
@@ -165,11 +186,9 @@ export default async (request) => {
 
     const accept = cfg.geo_accept_lists_v1;
     const names = cfg.geo_display_names_v1.geo_display_names;
-
-    // Map duoarea -> geo_code (locked mapping layer)
     const duoToGeo = accept.duoarea_to_geo_code;
 
-    // Tightening: ensure mapping coverage for every accepted duoarea used by this function
+    // Tightening: mapping coverage
     assertMappingCoverage({
       acceptedDuoareas: accept.accepted_duoarea_petroleum_wfr,
       duoToGeo,
@@ -181,11 +200,15 @@ export default async (request) => {
       label: "heating-fuels-latest natural_gas"
     });
 
+    // Rolling windows so "latest" is truly latest
+    const petroleumStart = startForWeeksBack(26); // ~6 months
+    const naturalGasStart = startForMonthsBack(24); // 2 years
+
     // --- Petroleum WFR (weekly) ---
     const petroleumWfrUrl = buildPetroleumWfrUrl({
       apiKey,
       acceptedDuoareas: accept.accepted_duoarea_petroleum_wfr,
-      start: "2025-10-01"
+      start: petroleumStart
     });
 
     const petroleumWfr = await fetchJson(petroleumWfrUrl);
@@ -193,15 +216,18 @@ export default async (request) => {
       ? petroleumWfr.response.data
       : [];
 
-    // Query is PRS-only + products filtered, but keep small safety filter.
+    // Safety filter (even though API query is filtered)
     const PETRO_FUELS = new Set(["EPD2F", "EPLLPA"]);
     const petroleumPRS = petroleumRows.filter(
       (r) => r && r.process === "PRS" && PETRO_FUELS.has(r.product)
     );
 
     const latestPetroleumWeek = pickLatestPeriod(petroleumPRS);
-    if (!latestPetroleumWeek) throw new Error("EIA_WFR_NO_DATA: could not determine latest weekly period");
-
+    if (!latestPetroleumWeek) {
+      throw new Error(
+        `EIA_WFR_NO_DATA: could not determine latest weekly period (start=${petroleumStart})`
+      );
+    }
     const petroleumLatest = petroleumPRS.filter(
       (r) => String(r.period) === latestPetroleumWeek
     );
@@ -210,24 +236,23 @@ export default async (request) => {
     const naturalGasUrl = buildNaturalGasSumUrl({
       apiKey,
       acceptedDuoareas: accept.accepted_duoarea_natural_gas,
-      start: "2025-10"
+      start: naturalGasStart
     });
 
     const naturalGas = await fetchJson(naturalGasUrl);
-    const ngRows = Array.isArray(naturalGas?.response?.data)
-      ? naturalGas.response.data
-      : [];
+    const ngRows = Array.isArray(naturalGas?.response?.data) ? naturalGas.response.data : [];
 
-    // Query is PRS-only, but keep safety filter.
     const ngPRS = ngRows.filter((r) => r && r.process === "PRS");
 
     const latestNgMonth = pickLatestPeriod(ngPRS);
-    if (!latestNgMonth) throw new Error("EIA_NG_NO_DATA: could not determine latest monthly period");
-
+    if (!latestNgMonth) {
+      throw new Error(
+        `EIA_NG_NO_DATA: could not determine latest monthly period (start=${naturalGasStart})`
+      );
+    }
     const ngLatest = ngPRS.filter((r) => String(r.period) === latestNgMonth);
 
     // --- Normalize into one response ---
-    // Canonical fuel display names locked earlier:
     const fuelNameByProduct = {
       EPD2F: "Heating Oil",
       EPLLPA: "Propane",
@@ -238,17 +263,15 @@ export default async (request) => {
     const pushRow = ({ source, period, duoarea, product, units, value, series }) => {
       const geo_code = duoToGeo[duoarea] || null;
       if (!geo_code) {
-        // Should never happen due to tightening checks above.
         throw new Error(`INTERNAL_MAPPING_GAP: duoarea ${duoarea} missing in duoarea_to_geo_code`);
       }
 
       out.push({
         fuel: fuelNameByProduct[product] || product,
-        sector: "Residential", // PRS-only in v1
+        sector: "Residential", // PRS-only
         geo_code,
         geo_display_name: names[geo_code] || geo_code,
         period,
-        // raw price: petroleum in $/GAL, natural gas in $/MCF
         price: toNumberOrNull(value),
         price_units: units || null,
         source_route: source,
@@ -280,11 +303,11 @@ export default async (request) => {
       });
     }
 
-    // Deterministic sort for stable diffs:
-    // fuel ASC, geo_code ASC, period DESC (so "latest" rows appear first within group even though all are latest)
+    // Deterministic sort
     out.sort((a, b) => {
       if (a.fuel !== b.fuel) return a.fuel < b.fuel ? -1 : 1;
       if (a.geo_code !== b.geo_code) return a.geo_code < b.geo_code ? -1 : 1;
+      // period DESC
       if (a.period !== b.period) return a.period > b.period ? -1 : 1;
       return 0;
     });
@@ -296,9 +319,13 @@ export default async (request) => {
         petroleum_week: latestPetroleumWeek,
         natural_gas_month: latestNgMonth
       },
+      windows: {
+        petroleum_start: petroleumStart,
+        natural_gas_start: naturalGasStart
+      },
       sources: {
-        petroleum_wfr_url: petroleumWfrUrl,
-        natural_gas_url: naturalGasUrl
+        petroleum_wfr_url: redactApiKey(petroleumWfrUrl),
+        natural_gas_url: redactApiKey(naturalGasUrl)
       },
       counts: {
         petroleum_rows_latest_period: petroleumLatest.length,
