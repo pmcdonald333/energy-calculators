@@ -28,3 +28,7 @@ status = 200
 from = "/api/heating_fuels_latest.json"
 to = "/.netlify/functions/heating-fuels-latest"
 status = 200
+[[redirects]]
+from = "/api/transportation_fuels_latest.json"
+to = "/.netlify/functions/transportation-fuels-latest"
+status = 200
