@@ -48,3 +48,7 @@ status = 200
 from = "/energy-prices"
 to = "/energy-prices.html"
 status = 200
+[[redirects]]
+from = "/api/energy_prices_status.json"
+to = "/.netlify/functions/energy-prices-status"
+status = 200
