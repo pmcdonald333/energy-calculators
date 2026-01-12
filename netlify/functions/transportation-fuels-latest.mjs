@@ -1,6 +1,6 @@
 // netlify/functions/transportation-fuels-latest.mjs
 //
-// Latest-only Transportation Fuels:
+// Latest-only Transportation Fuels (retail-first, resilient):
 // - Petroleum weekly (gnd): Diesel (EPD2DXL0) + Gasoline (EPMR)
 //
 // Uses locked configs in public/:
@@ -14,13 +14,8 @@
 // - Retry transient 5xx
 //
 // Tightening:
-// - Latest week chosen from rows with numeric values
-// - If newest weeks have no numeric values, step backwards to the most-recent week that does
+// - Latest week chosen from rows with numeric values (after selecting best process)
 // - Deduplicate output rows by (geo_code, fuel, period)
-//
-// IMPORTANT:
-// - Unlike heating fuels, gnd does NOT reliably support PRS filtering.
-//   Do NOT facet[process]=PRS; accept rows even if process is missing.
 
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
 
@@ -53,9 +48,21 @@ function toNumberOrNull(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   if (typeof v !== "string") return null;
   const t = v.trim();
-  if (t === "" || t.toLowerCase() === "null") return null;
+  if (!t) return null;
+  const lower = t.toLowerCase();
+  if (lower === "null" || lower === "na" || lower === "n/a" || t === "." || t === "-") return null;
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
+}
+
+function pickLatestPeriod(rows) {
+  let best = null;
+  for (const r of rows) {
+    if (!r?.period) continue;
+    const p = String(r.period);
+    if (best === null || p > best) best = p;
+  }
+  return best;
 }
 
 function redactApiKeyFromUrlString(url) {
@@ -125,9 +132,10 @@ function buildPetroleumGndUrl({ apiKey, duoareas, products, start }) {
   // Duoareas (chunked)
   for (const d of duoareas) params.append("facets[duoarea][]", d);
 
+  // Window start
   params.set("start", start);
 
-  // deterministic sort
+  // Deterministic sorting
   params.set("sort[0][column]", "period");
   params.set("sort[0][direction]", "desc");
   params.set("sort[1][column]", "duoarea");
@@ -136,7 +144,8 @@ function buildPetroleumGndUrl({ apiKey, duoareas, products, start }) {
   params.set("sort[2][direction]", "asc");
 
   params.set("offset", "0");
-  params.set("length", "5000");
+  // Keep below “huge” sizes; chunking already multiplies requests.
+  params.set("length", "3000");
 
   return `${base}?${params.toString()}`;
 }
@@ -169,31 +178,43 @@ function dedupeLatestRows(rows) {
   return Array.from(byKey.values());
 }
 
-function pickMostRecentPeriodWithNumericValues(rows) {
-  const periodsDesc = Array.from(
-    new Set(rows.map((r) => (r?.period ? String(r.period) : null)).filter(Boolean))
-  ).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0)); // DESC
-
-  for (const p of periodsDesc) {
-    const anyNumeric = rows.some((r) => String(r.period) === p && toNumberOrNull(r?.value) !== null);
-    if (anyNumeric) return p;
+function pickBestProcess(rowsWithNumericValues) {
+  // Prefer retail if present, else fall back to any process that has numeric values.
+  const preferred = ["RRP", "PRS"]; // PRS kept as a fallback preference only
+  const counts = new Map();
+  for (const r of rowsWithNumericValues) {
+    const proc = r?.process ? String(r.process) : "";
+    if (!proc) continue;
+    counts.set(proc, (counts.get(proc) || 0) + 1);
   }
-  return null;
+
+  for (const p of preferred) {
+    if (counts.has(p)) return p;
+  }
+
+  // Otherwise pick the most common process among numeric rows (deterministic tie-break)
+  let best = null;
+  for (const [proc, n] of counts.entries()) {
+    if (best === null) {
+      best = { proc, n };
+      continue;
+    }
+    if (n > best.n) best = { proc, n };
+    else if (n === best.n && proc < best.proc) best = { proc, n };
+  }
+  return best?.proc || null;
 }
 
-function acceptGndRowProcess(processValue) {
-  // gnd often returns no process, or process that isn't PRS.
-  // We accept missing/empty OR PRS to avoid filtering out everything.
-  if (processValue === null || processValue === undefined) return true;
-  const s = String(processValue).trim();
-  if (!s) return true;
-  return s === "PRS";
+function sectorLabelFromProcess(proc) {
+  if (!proc) return "Unknown";
+  if (proc === "RRP") return "Retail";
+  if (proc === "PRS") return "Residential";
+  return proc; // deterministic fallback
 }
 
 export default async (request) => {
   try {
-    ensureEnv("EIA_API_KEY");
-    const apiKey = process.env.EIA_API_KEY;
+    const apiKey = ensureEnv("EIA_API_KEY");
 
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
     if (!baseUrl) {
@@ -218,54 +239,66 @@ export default async (request) => {
       EPMR: "Gasoline"
     };
 
+    // Start windows (same spirit as your other functions, but deterministic)
+    const startCandidates = [26, 52, 104].map(startForWeeksBack);
+    const triedStarts = [];
+
     // Chunking to avoid EIA 500s
-    const DUOAREA_CHUNK_SIZE = 15;
+    const DUOAREA_CHUNK_SIZE = 12;
     const duoareaChunks = chunkArray(accept.accepted_duoarea_petroleum_gnd, DUOAREA_CHUNK_SIZE);
 
-    // Adaptive lookback windows (weeks)
-    const LOOKBACK_WEEKS = [26, 52, 104];
-    const triedStarts = LOOKBACK_WEEKS.map((w) => startForWeeksBack(w));
-
+    let allRows = [];
+    let urls = [];
     let chosenStart = null;
-    let latestWeek = null;
-    let latestRows = [];
-    let urlsUsed = [];
-    let fetchedTotal = 0;
 
-    for (let i = 0; i < LOOKBACK_WEEKS.length; i++) {
-      const start = triedStarts[i];
-      const allRows = [];
-      const urls = [];
+    // Try multiple start windows until we can compute latest week with numeric values
+    let latestWeek = null;
+    let chosenProcess = null;
+
+    for (const start of startCandidates) {
+      triedStarts.push(start);
+
+      const thisRows = [];
+      const thisUrls = [];
 
       for (const chunk of duoareaChunks) {
         const url = buildPetroleumGndUrl({ apiKey, duoareas: chunk, products: PRODUCTS, start });
-        urls.push(url);
+        thisUrls.push(url);
 
         const json = await fetchJsonWithRetry(url, { tries: 3, baseDelayMs: 450 });
         const rows = Array.isArray(json?.response?.data) ? json.response.data : [];
-        allRows.push(...rows);
+        thisRows.push(...rows);
       }
 
-      fetchedTotal += allRows.length;
+      // Keep our products
+      const prodRows = thisRows.filter((r) => r && PRODUCTS.includes(r.product));
 
-      // Filter to our products, and accept process if missing/empty (or PRS)
-      const filtered = allRows.filter(
-        (r) =>
-          r &&
-          PRODUCTS.includes(r.product) &&
-          acceptGndRowProcess(r.process) &&
-          r.period &&
-          r.duoarea
-      );
+      // Find numeric rows first
+      const numericRows = prodRows.filter((r) => toNumberOrNull(r?.value) !== null);
 
-      const candidateWeek = pickMostRecentPeriodWithNumericValues(filtered);
-      if (!candidateWeek) continue;
+      // Select the best process based on numeric rows
+      const proc = pickBestProcess(numericRows);
 
-      chosenStart = start;
-      latestWeek = candidateWeek;
-      latestRows = filtered.filter((r) => String(r.period) === latestWeek);
-      urlsUsed = urls;
-      break;
+      // If we found a process, try to pick latest week within that process
+      let latest = null;
+      if (proc) {
+        const numericProcRows = numericRows.filter((r) => String(r.process || "") === proc);
+        latest = pickLatestPeriod(numericProcRows);
+      }
+
+      // If still nothing, try latest week across ANY numeric rows (no process filter)
+      if (!latest) {
+        latest = pickLatestPeriod(numericRows);
+      }
+
+      if (latest) {
+        chosenStart = start;
+        allRows = thisRows;
+        urls = thisUrls;
+        latestWeek = latest;
+        chosenProcess = proc; // may be null if we had to go process-agnostic
+        break;
+      }
     }
 
     if (!latestWeek) {
@@ -276,6 +309,16 @@ export default async (request) => {
       );
     }
 
+    // Now build latest rows for output
+    const prodRows = allRows.filter((r) => r && PRODUCTS.includes(r.product));
+
+    // If we selected a process, constrain to it; otherwise allow any process.
+    const filtered = chosenProcess
+      ? prodRows.filter((r) => String(r.process || "") === chosenProcess)
+      : prodRows;
+
+    const latestRows = filtered.filter((r) => String(r.period) === latestWeek);
+
     const out = [];
     for (const r of latestRows) {
       const duoarea = String(r.duoarea);
@@ -284,13 +327,14 @@ export default async (request) => {
 
       out.push({
         fuel: fuelNameByProduct[String(r.product)] || String(r.product),
-        sector: "Residential", // UI label; gnd does not reliably provide process=PRS
+        sector: sectorLabelFromProcess(chosenProcess || (r.process ? String(r.process) : null)),
         geo_code,
         geo_display_name: names[geo_code] || geo_code,
         period: String(r.period),
         price: toNumberOrNull(r.value),
-        price_units: r.units || null,
+        price_units: r.units || null, // usually $/GAL
         source_route: "petroleum/pri/gnd (weekly)",
+        source_process: r.process || null,
         source_series: r.series || null
       });
     }
@@ -309,11 +353,15 @@ export default async (request) => {
       ok: true,
       generated_at: new Date().toISOString(),
       latest: { petroleum_week: latestWeek },
-      windows: { petroleum_start: chosenStart },
-      sources: { petroleum_gnd_urls: urlsUsed.map(redactApiKeyFromUrlString) },
+      windows: { petroleum_start: chosenStart, tried_starts: triedStarts },
+      selection: {
+        chosen_process: chosenProcess || null,
+        chosen_sector_label: sectorLabelFromProcess(chosenProcess)
+      },
+      sources: { petroleum_gnd_urls: urls.map(redactApiKeyFromUrlString) },
       counts: {
         petroleum_chunks: duoareaChunks.length,
-        petroleum_rows_fetched_total: fetchedTotal,
+        petroleum_rows_fetched_total: allRows.length,
         petroleum_rows_latest_period: latestRows.length,
         output_rows: deduped.length
       },
