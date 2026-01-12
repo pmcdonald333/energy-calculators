@@ -2,12 +2,86 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Energy Calculators</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+
+    <title>EnergyCostLab — Energy cost calculators & data</title>
+    <meta name="description" content="EnergyCostLab provides energy cost calculators and regularly-updated energy price datasets." />
+
+    <link rel="stylesheet" href="/style.css" />
   </head>
+
   <body>
-    <h1>Energy Calculators</h1>
-    <p>Initial deployment successful. Status page will be added next.</p>
-    <p><a href="/status/">Open System Status</a></p>
+    <div class="container">
+      <header class="site-header">
+        <div class="brand">
+          <p class="brand-title">EnergyCostLab</p>
+          <p class="brand-sub">Energy cost calculators + updated datasets</p>
+        </div>
+
+        <nav class="nav" aria-label="Primary">
+          <a href="/">Home</a>
+          <a href="/energy-prices">Energy Prices</a>
+          <a href="/api/energy_prices_latest_ui.json">API</a>
+          <a href="/api/energy_prices_status.json">Status JSON</a>
+        </nav>
+      </header>
+
+      <main class="main">
+        <section class="grid">
+          <article class="card" style="grid-column: span 8;">
+            <p class="kicker">Live tool</p>
+            <h2>Energy Prices (Latest)</h2>
+            <p>
+              A quick table UI backed by a hardened pipeline (upstream fetch → fallback fill → UI matrix).
+              Includes direct-only filtering and deep-link selection via URL parameters.
+            </p>
+
+            <div class="badges">
+              <span class="badge">UI: <span class="mono">/energy-prices</span></span>
+              <span class="badge">API: <span class="mono">/api/energy_prices_latest_ui.json</span></span>
+              <span class="badge">Health: <span class="mono">/api/energy_prices_status.json</span></span>
+            </div>
+
+            <div style="margin-top: 12px; display:flex; gap:10px; flex-wrap:wrap;">
+              <a class="btn primary" href="/energy-prices">Open Energy Prices</a>
+              <a class="btn" href="/api/energy_prices_latest_ui.json">View API JSON</a>
+              <a class="btn" href="/api/energy_prices_status.json">View Status JSON</a>
+            </div>
+          </article>
+
+          <aside class="card" style="grid-column: span 4;">
+            <p class="kicker">Roadmap</p>
+            <h3>More calculators coming</h3>
+            <p>
+              We’ll add additional pages using the same structure: lightweight UI + stable API endpoints.
+            </p>
+            <ul class="list">
+              <li>Electricity rate comparisons</li>
+              <li>Heating cost comparisons (fuel switching)</li>
+              <li>Climate HDD/CDD quick lookups</li>
+              <li>Efficiency / appliance cost estimators</li>
+            </ul>
+          </aside>
+
+          <article class="card" style="grid-column: span 12;">
+            <p class="kicker">Implementation notes</p>
+            <p class="mono" style="margin:0;">
+              This site is hosted on Netlify. Public pages live in <span class="mono">/public</span> and APIs are served
+              via Netlify Functions routed under <span class="mono">/api/*</span>.
+            </p>
+          </article>
+        </section>
+
+        <footer class="footer">
+          <div>
+            © <span id="y"></span> EnergyCostLab. Data sources vary by endpoint; see API outputs for metadata.
+          </div>
+        </footer>
+      </main>
+    </div>
+
+    <script>
+      document.getElementById("y").textContent = String(new Date().getFullYear());
+    </script>
   </body>
 </html>
