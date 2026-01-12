@@ -2,13 +2,13 @@
   publish = "public"
   functions = "netlify/functions"
 
-# Prevent indexing of your status pages
+# Block indexing for status pages
 [[headers]]
   for = "/status/*"
   [headers.values]
     X-Robots-Tag = "noindex, nofollow"
 
-# Prevent indexing of your API JSON endpoints (recommended)
+# Block indexing for API JSON endpoints
 [[headers]]
   for = "/api/*"
   [headers.values]
