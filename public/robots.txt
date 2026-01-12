@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /api/
+Disallow: /.netlify/
+Disallow: /status/
+
+Sitemap: https://energycostlab.com/sitemap.xml
