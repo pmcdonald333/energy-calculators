@@ -108,7 +108,11 @@ function loadStoredDirectOnly() {
     return null;
   }
 }
-
+function setSelectedSummary() {
+  const el = $("selectedSummary");
+  if (!el) return;
+  el.textContent = selectedFuelKey || "—";
+}
 function storeDirectOnly(v) {
   try {
     localStorage.setItem(STORAGE_KEY_DIRECT_ONLY, v ? "1" : "0");
