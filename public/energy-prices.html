@@ -24,8 +24,10 @@
         flex-wrap: wrap;
         align-items: center;
       }
-      select, button {
+      select, button, input[type="checkbox"] {
         font: inherit;
+      }
+      select, button {
         padding: 6px 10px;
       }
       .meta {
@@ -63,7 +65,8 @@
         background: rgba(255, 165, 0, 0.12);
       }
       .mono {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
         font-size: 12px;
       }
       .error {
@@ -78,6 +81,26 @@
         font-size: 12px;
         opacity: 0.85;
       }
+      .chip {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(0,0,0,0.12);
+        background: rgba(0,0,0,0.03);
+        font-size: 12px;
+      }
+      .controls {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .toggle {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        user-select: none;
+      }
     </style>
   </head>
 
@@ -88,10 +111,20 @@
         <span id="statusPill" class="pill">loading…</span>
       </div>
 
-      <div class="row">
+      <div class="controls">
         <label>
           Fuel:
           <select id="fuelSelect"></select>
+        </label>
+
+        <span class="chip">
+          Selected:
+          <span class="mono" id="selectedSummary">—</span>
+        </span>
+
+        <label class="toggle" title="Hide rows that are populated via fallback-chain (region/US).">
+          <input id="directOnlyToggle" type="checkbox" />
+          Direct only
         </label>
 
         <button id="refreshBtn" type="button">Refresh</button>
@@ -104,7 +137,7 @@
 
       <div class="meta">
         Generated at: <span class="mono" id="generatedAt">—</span>
-        <span class="small">(this is the function timestamp; caching may serve older data within TTL)</span>
+        <span class="small">(function timestamp; CDN may serve older data within TTL)</span>
       </div>
 
       <div id="errorBox" class="error" style="display:none;"></div>
