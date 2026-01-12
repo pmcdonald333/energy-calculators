@@ -129,6 +129,10 @@
 
         <button id="refreshBtn" type="button">Refresh</button>
 
+        <button id="copyLinkBtn" type="button" title="Copy a link with current fuel + direct-only selection">
+          Copy link
+        </button>
+
         <span class="meta">
           Source:
           <span class="mono">/api/energy_prices_latest_ui.json</span>
@@ -138,6 +142,10 @@
       <div class="meta">
         Generated at: <span class="mono" id="generatedAt">—</span>
         <span class="small">(function timestamp; CDN may serve older data within TTL)</span>
+      </div>
+
+      <div class="meta">
+        Updated: <span class="mono" id="updatedAgo">—</span>
       </div>
 
       <div id="errorBox" class="error" style="display:none;"></div>
