@@ -1,16 +1,18 @@
 // public/energy-prices.js
 //
 // UI for /api/energy_prices_latest_ui.json
-// Hardened selection behavior:
-// - Never snaps back to first option unless absolutely necessary
-// - Persists selection in localStorage
-// - Supports deep links: ?fuel=<fuel_key>
-// - Keeps URL in sync with dropdown (history.replaceState)
+// - Stable dropdown selection + URL deep-link (?fuel=...)
+// - Direct-only toggle hides fallback rows
+// - Persists selection + toggle in localStorage + URL
 // - Refresh preserves selection
 
 const API_URL = "/api/energy_prices_latest_ui.json";
-const STORAGE_KEY = "energy_prices_selected_fuel_key";
+
+const STORAGE_KEY_FUEL = "energy_prices_selected_fuel_key";
+const STORAGE_KEY_DIRECT_ONLY = "energy_prices_direct_only";
+
 const URL_PARAM_FUEL = "fuel";
+const URL_PARAM_DIRECT = "direct"; // 1 or 0
 
 function $(id) {
   return document.getElementById(id);
@@ -31,14 +33,25 @@ function fmt(v) {
   return s ? s : "—";
 }
 
-function setPill(ok, fallbackCount) {
+function setPill(ok, fallbackCount, shownCount, totalGeos) {
   const pill = $("statusPill");
   pill.classList.remove("ok", "fb");
+
   if (!ok) {
     pill.classList.add("fb");
     pill.textContent = "error";
     return;
   }
+
+  // If direct-only is ON, fallbackCount is computed over SHOWN rows only,
+  // but we also want a helpful label if we’re filtering.
+  const directOnly = getDirectOnlyState();
+  if (directOnly) {
+    pill.classList.add("ok");
+    pill.textContent = `ok (direct only: ${shownCount}/${totalGeos})`;
+    return;
+  }
+
   if (fallbackCount > 0) {
     pill.classList.add("fb");
     pill.textContent = `ok (${fallbackCount} fallback)`;
@@ -61,7 +74,6 @@ function hideError() {
 }
 
 function buildFuelOptionLabel(f) {
-  // Example: "Gasoline — Retail"
   return `${f.fuel} — ${f.sector}`;
 }
 
@@ -69,25 +81,43 @@ function computeFuelKeysSignature(fuels) {
   return fuels.map((f) => f.fuel_key).join("|");
 }
 
-function loadStoredSelection() {
+function loadStoredFuelSelection() {
   try {
-    const v = localStorage.getItem(STORAGE_KEY);
+    const v = localStorage.getItem(STORAGE_KEY_FUEL);
     return v ? String(v) : null;
   } catch {
     return null;
   }
 }
 
-function storeSelection(fuelKey) {
+function storeFuelSelection(fuelKey) {
   try {
-    if (fuelKey) localStorage.setItem(STORAGE_KEY, String(fuelKey));
+    if (fuelKey) localStorage.setItem(STORAGE_KEY_FUEL, String(fuelKey));
+  } catch {
+    // ignore
+  }
+}
+
+function loadStoredDirectOnly() {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_DIRECT_ONLY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function storeDirectOnly(v) {
+  try {
+    localStorage.setItem(STORAGE_KEY_DIRECT_ONLY, v ? "1" : "0");
   } catch {
     // ignore
   }
 }
 
 function parseFuelKey(fuelKey) {
-  // dataset::fuel::sector
   const parts = String(fuelKey || "").split("::");
   return {
     dataset: parts[0] || null,
@@ -96,40 +126,55 @@ function parseFuelKey(fuelKey) {
   };
 }
 
-function readFuelKeyFromUrl() {
+function readUrlParams() {
   try {
     const u = new URL(window.location.href);
-    const v = u.searchParams.get(URL_PARAM_FUEL);
-    return v ? String(v) : null;
+    const fuel = u.searchParams.get(URL_PARAM_FUEL);
+    const direct = u.searchParams.get(URL_PARAM_DIRECT);
+    return {
+      fuel: fuel ? String(fuel) : null,
+      directOnly:
+        direct === null
+          ? null
+          : direct === "1" || direct.toLowerCase() === "true" || direct.toLowerCase() === "yes"
+    };
   } catch {
-    return null;
+    return { fuel: null, directOnly: null };
   }
 }
 
-function writeFuelKeyToUrl(fuelKey) {
+function writeUrlParams({ fuelKey, directOnly }) {
   try {
     const u = new URL(window.location.href);
+
     if (fuelKey) u.searchParams.set(URL_PARAM_FUEL, fuelKey);
     else u.searchParams.delete(URL_PARAM_FUEL);
 
-    // Don’t pollute browser history when someone toggles dropdown
+    u.searchParams.set(URL_PARAM_DIRECT, directOnly ? "1" : "0");
+
     window.history.replaceState({}, "", u.toString());
   } catch {
     // ignore
   }
 }
 
-// Keep these across refreshes
+// State
 let lastData = null;
 let lastFuelKeysSignature = null;
 
-// Precedence for initial selection:
-// 1) URL ?fuel=...
-// 2) localStorage
-// 3) first option
-let selectedFuelKey = readFuelKeyFromUrl() || loadStoredSelection();
+// Initial precedence:
+// - URL params override localStorage
+const initial = readUrlParams();
+let selectedFuelKey = initial.fuel || loadStoredFuelSelection();
+
+let directOnly =
+  initial.directOnly !== null ? initial.directOnly : (loadStoredDirectOnly() ?? false);
 
 let isLoading = false;
+
+function getDirectOnlyState() {
+  return !!directOnly;
+}
 
 function chooseBestAvailableFuelKey(fuels, desiredKey) {
   if (!Array.isArray(fuels) || fuels.length === 0) return null;
@@ -155,10 +200,9 @@ function chooseBestAvailableFuelKey(fuels, desiredKey) {
 function ensureDropdownPopulated(data) {
   const fuels = Array.isArray(data?.fuels) ? data.fuels : [];
   const sig = computeFuelKeysSignature(fuels);
-
   const sel = $("fuelSelect");
 
-  // Rebuild ONLY if fuels changed
+  // Rebuild only if fuels changed
   if (sig && sig !== lastFuelKeysSignature) {
     lastFuelKeysSignature = sig;
 
@@ -171,16 +215,15 @@ function ensureDropdownPopulated(data) {
     }
   }
 
-  // Always ensure selection is valid and applied
   selectedFuelKey = chooseBestAvailableFuelKey(fuels, selectedFuelKey);
 
   if (selectedFuelKey) {
     sel.value = selectedFuelKey;
-
-    // Keep everything in sync (storage + URL)
-    storeSelection(selectedFuelKey);
-    writeFuelKeyToUrl(selectedFuelKey);
+    storeFuelSelection(selectedFuelKey);
   }
+
+  // keep URL synced
+  writeUrlParams({ fuelKey: selectedFuelKey, directOnly });
 }
 
 function renderMeta(data) {
@@ -193,10 +236,10 @@ function renderTable(data) {
 
   const geos = Array.isArray(data?.geos) ? data.geos : [];
   const values = data?.values && typeof data.values === "object" ? data.values : {};
-
   const grid = selectedFuelKey ? values[selectedFuelKey] : null;
 
-  let fallbackCount = 0;
+  let fallbackCountShown = 0;
+  let shownRows = 0;
 
   for (const g of geos) {
     const geo = g.geo_code;
@@ -207,7 +250,13 @@ function renderTable(data) {
     const period = cell?.period ?? null;
 
     const isFallback = cell?.is_fallback === true;
-    if (isFallback) fallbackCount += 1;
+
+    if (directOnly && isFallback) {
+      continue; // HIDE fallback rows
+    }
+
+    shownRows += 1;
+    if (isFallback) fallbackCountShown += 1;
 
     const fbFrom =
       cell?.fallback_from_geo_code === null ||
@@ -233,7 +282,7 @@ function renderTable(data) {
     tbody.appendChild(tr);
   }
 
-  setPill(!!data?.ok, fallbackCount);
+  setPill(!!data?.ok, fallbackCountShown, shownRows, geos.length);
 }
 
 async function fetchLatest({ bustCache } = {}) {
@@ -266,24 +315,27 @@ async function refresh({ bustCache } = {}) {
   hideError();
   $("refreshBtn").disabled = true;
   $("fuelSelect").disabled = true;
+  $("directOnlyToggle").disabled = true;
 
   try {
     const data = await fetchLatest({ bustCache });
     lastData = data;
 
-    // Capture current selection from UI (if any) before reconciling
+    // Capture current UI state first
     const sel = $("fuelSelect");
     if (sel?.value) selectedFuelKey = sel.value;
+    directOnly = !!$("directOnlyToggle").checked;
 
     ensureDropdownPopulated(data);
     renderMeta(data);
     renderTable(data);
   } catch (err) {
     showError(err?.message || String(err));
-    setPill(false, 0);
+    setPill(false, 0, 0, 0);
   } finally {
     $("refreshBtn").disabled = false;
     $("fuelSelect").disabled = false;
+    $("directOnlyToggle").disabled = false;
     isLoading = false;
   }
 }
@@ -291,11 +343,17 @@ async function refresh({ bustCache } = {}) {
 function init() {
   const sel = $("fuelSelect");
   const btn = $("refreshBtn");
+  const toggle = $("directOnlyToggle");
+
+  // apply initial toggle state to UI + persistence + URL
+  toggle.checked = !!directOnly;
+  storeDirectOnly(!!directOnly);
+  writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
 
   sel.addEventListener("change", () => {
     selectedFuelKey = sel.value;
-    storeSelection(selectedFuelKey);
-    writeFuelKeyToUrl(selectedFuelKey);
+    storeFuelSelection(selectedFuelKey);
+    writeUrlParams({ fuelKey: selectedFuelKey, directOnly });
 
     if (lastData) {
       ensureDropdownPopulated(lastData);
@@ -304,8 +362,17 @@ function init() {
     }
   });
 
+  toggle.addEventListener("change", () => {
+    directOnly = !!toggle.checked;
+    storeDirectOnly(directOnly);
+    writeUrlParams({ fuelKey: selectedFuelKey, directOnly });
+
+    if (lastData) {
+      renderTable(lastData);
+    }
+  });
+
   btn.addEventListener("click", () => {
-    // Bust cache on manual refresh
     refresh({ bustCache: true });
   });
 
