@@ -24,10 +24,13 @@
         flex-wrap: wrap;
         align-items: center;
       }
-      select, button, input[type="checkbox"] {
+      select,
+      button,
+      input[type="checkbox"] {
         font: inherit;
       }
-      select, button {
+      select,
+      button {
         padding: 6px 10px;
       }
       .meta {
@@ -39,14 +42,15 @@
         width: 100%;
         margin-top: 12px;
       }
-      th, td {
-        border: 1px solid rgba(0,0,0,0.12);
+      th,
+      td {
+        border: 1px solid rgba(0, 0, 0, 0.12);
         padding: 8px 10px;
         text-align: left;
         vertical-align: top;
       }
       th {
-        background: rgba(0,0,0,0.04);
+        background: rgba(0, 0, 0, 0.04);
         position: sticky;
         top: 0;
         z-index: 1;
@@ -56,7 +60,7 @@
         padding: 2px 8px;
         border-radius: 999px;
         font-size: 12px;
-        border: 1px solid rgba(0,0,0,0.15);
+        border: 1px solid rgba(0, 0, 0, 0.15);
       }
       .pill.ok {
         background: rgba(0, 200, 0, 0.08);
@@ -71,8 +75,8 @@
       }
       .error {
         padding: 10px 12px;
-        border: 1px solid rgba(255,0,0,0.25);
-        background: rgba(255,0,0,0.06);
+        border: 1px solid rgba(255, 0, 0, 0.25);
+        background: rgba(255, 0, 0, 0.06);
         border-radius: 8px;
         margin-top: 12px;
         white-space: pre-wrap;
@@ -85,8 +89,8 @@
         display: inline-block;
         padding: 3px 8px;
         border-radius: 999px;
-        border: 1px solid rgba(0,0,0,0.12);
-        background: rgba(0,0,0,0.03);
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        background: rgba(0, 0, 0, 0.03);
         font-size: 12px;
       }
       .controls {
@@ -127,9 +131,14 @@
           Direct only
         </label>
 
+        <label class="toggle" title="Show only rows where price is missing.">
+          <input id="missingOnlyToggle" type="checkbox" />
+          Show only missing
+        </label>
+
         <button id="refreshBtn" type="button">Refresh</button>
 
-        <button id="copyLinkBtn" type="button" title="Copy a link with current fuel + direct-only selection">
+        <button id="copyLinkBtn" type="button" title="Copy a link with current fuel + toggles">
           Copy link
         </button>
 
