@@ -1,6 +1,6 @@
 // netlify/functions/transportation-fuels-latest.mjs
 //
-// Latest-only Transportation Fuels (PRS-only):
+// Latest-only Transportation Fuels:
 // - Petroleum weekly (gnd): Diesel (EPD2DXL0) + Gasoline (EPMR)
 //
 // Uses locked configs in public/:
@@ -15,8 +15,12 @@
 //
 // Tightening:
 // - Latest week chosen from rows with numeric values
-// - If newest week has no numeric values, step backwards to the most-recent week that does
+// - If newest weeks have no numeric values, step backwards to the most-recent week that does
 // - Deduplicate output rows by (geo_code, fuel, period)
+//
+// IMPORTANT:
+// - Unlike heating fuels, gnd does NOT reliably support PRS filtering.
+//   Do NOT facet[process]=PRS; accept rows even if process is missing.
 
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
 
@@ -115,9 +119,6 @@ function buildPetroleumGndUrl({ apiKey, duoareas, products, start }) {
   params.set("frequency", "weekly");
   params.set("data[0]", "value");
 
-  // PRS-only
-  params.append("facets[process][]", "PRS");
-
   // Products
   for (const p of products) params.append("facets[product][]", p);
 
@@ -169,7 +170,6 @@ function dedupeLatestRows(rows) {
 }
 
 function pickMostRecentPeriodWithNumericValues(rows) {
-  // rows already filtered to PRS + product set
   const periodsDesc = Array.from(
     new Set(rows.map((r) => (r?.period ? String(r.period) : null)).filter(Boolean))
   ).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0)); // DESC
@@ -181,9 +181,19 @@ function pickMostRecentPeriodWithNumericValues(rows) {
   return null;
 }
 
+function acceptGndRowProcess(processValue) {
+  // gnd often returns no process, or process that isn't PRS.
+  // We accept missing/empty OR PRS to avoid filtering out everything.
+  if (processValue === null || processValue === undefined) return true;
+  const s = String(processValue).trim();
+  if (!s) return true;
+  return s === "PRS";
+}
+
 export default async (request) => {
   try {
-    const apiKey = ensureEnv("EIA_API_KEY");
+    ensureEnv("EIA_API_KEY");
+    const apiKey = process.env.EIA_API_KEY;
 
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
     if (!baseUrl) {
@@ -202,7 +212,7 @@ export default async (request) => {
       label: "transportation-fuels-latest petroleum_gnd"
     });
 
-    const PRODUCTS = ["EPD2DXL0", "EPMR"]; // locked: diesel + gasoline
+    const PRODUCTS = ["EPD2DXL0", "EPMR"]; // diesel + gasoline
     const fuelNameByProduct = {
       EPD2DXL0: "Diesel",
       EPMR: "Gasoline"
@@ -212,8 +222,9 @@ export default async (request) => {
     const DUOAREA_CHUNK_SIZE = 15;
     const duoareaChunks = chunkArray(accept.accepted_duoarea_petroleum_gnd, DUOAREA_CHUNK_SIZE);
 
-    // NEW: adaptive lookback windows (weeks)
+    // Adaptive lookback windows (weeks)
     const LOOKBACK_WEEKS = [26, 52, 104];
+    const triedStarts = LOOKBACK_WEEKS.map((w) => startForWeeksBack(w));
 
     let chosenStart = null;
     let latestWeek = null;
@@ -221,8 +232,8 @@ export default async (request) => {
     let urlsUsed = [];
     let fetchedTotal = 0;
 
-    for (const weeksBack of LOOKBACK_WEEKS) {
-      const start = startForWeeksBack(weeksBack);
+    for (let i = 0; i < LOOKBACK_WEEKS.length; i++) {
+      const start = triedStarts[i];
       const allRows = [];
       const urls = [];
 
@@ -237,27 +248,31 @@ export default async (request) => {
 
       fetchedTotal += allRows.length;
 
-      // Keep PRS + our products (defensive; facets already restrict)
-      const prs = allRows.filter((r) => r && r.process === "PRS" && PRODUCTS.includes(r.product));
+      // Filter to our products, and accept process if missing/empty (or PRS)
+      const filtered = allRows.filter(
+        (r) =>
+          r &&
+          PRODUCTS.includes(r.product) &&
+          acceptGndRowProcess(r.process) &&
+          r.period &&
+          r.duoarea
+      );
 
-      const candidateWeek = pickMostRecentPeriodWithNumericValues(prs);
-      if (!candidateWeek) {
-        // try a longer window
-        continue;
-      }
+      const candidateWeek = pickMostRecentPeriodWithNumericValues(filtered);
+      if (!candidateWeek) continue;
 
       chosenStart = start;
       latestWeek = candidateWeek;
-      latestRows = prs.filter((r) => String(r.period) === latestWeek);
+      latestRows = filtered.filter((r) => String(r.period) === latestWeek);
       urlsUsed = urls;
       break;
     }
 
     if (!latestWeek) {
       throw new Error(
-        `EIA_GND_NO_DATA: could not determine latest weekly period with numeric values (tried weeksBack=${LOOKBACK_WEEKS.join(
-          ","
-        )})`
+        `EIA_GND_NO_DATA: could not determine latest weekly period with numeric values (tried starts: ${triedStarts.join(
+          ", "
+        )}; last=${triedStarts[triedStarts.length - 1]})`
       );
     }
 
@@ -269,12 +284,12 @@ export default async (request) => {
 
       out.push({
         fuel: fuelNameByProduct[String(r.product)] || String(r.product),
-        sector: "Residential", // PRS-only
+        sector: "Residential", // UI label; gnd does not reliably provide process=PRS
         geo_code,
         geo_display_name: names[geo_code] || geo_code,
         period: String(r.period),
         price: toNumberOrNull(r.value),
-        price_units: r.units || null, // usually $/GAL
+        price_units: r.units || null,
         source_route: "petroleum/pri/gnd (weekly)",
         source_series: r.series || null
       });
