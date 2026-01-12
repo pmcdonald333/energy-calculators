@@ -4,13 +4,17 @@
 //
 // Purpose:
 // - One small endpoint to tell if the pipeline is healthy
-// - Distinguish "EIA/upstream broken" vs "our UI function broken"
+// - Distinguish "upstream broken" vs "UI endpoint broken"
 // - Fast to curl + easy to monitor
 //
-// What it checks:
-// - Fetches /.netlify/functions/energy-prices-latest-with-fallback
-// - Reports basic counts and latest periods
-// - Does NOT re-fetch EIA directly (keeps this light + consistent)
+// What it checks (lightweight):
+// - /.netlify/functions/energy-prices-latest-with-fallback
+// - /api/energy_prices_latest_ui.json
+//
+// Notes:
+// - Does NOT re-fetch EIA directly.
+// - Returns non-2xx on failure so UptimeRobot alerts reliably.
+// - Uses no-store so CDN does NOT mask outages.
 
 function jsonResponse(status, obj, { cacheControl = "no-store" } = {}) {
   return new Response(JSON.stringify(obj, null, 2), {
@@ -30,27 +34,49 @@ function originFromRequest(req) {
   }
 }
 
-async function fetchJsonWithDetails(url) {
-  const res = await fetch(url, { headers: { accept: "application/json" } });
-  const text = await res.text().catch(() => "");
+async function fetchJsonWithDetails(url, { timeoutMs = 6000 } = {}) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
 
+  let res;
+  let text = "";
   let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = null;
-  }
 
-  return {
-    okHttp: res.ok,
-    status: res.status,
-    json,
-    text
-  };
+  try {
+    res = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal: ac.signal
+    });
+
+    text = await res.text().catch(() => "");
+
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+
+    return {
+      okHttp: res.ok,
+      status: res.status,
+      json,
+      text
+    };
+  } catch (err) {
+    return {
+      okHttp: false,
+      status: 0,
+      json: null,
+      text: "",
+      error: String(err?.message || err)
+    };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 function computeLatestPeriodsFromRows(rows) {
-  const best = new Map(); // fuel_key-ish: dataset::fuel::sector -> bestPeriod
+  const best = new Map(); // dataset::fuel::sector -> bestPeriod
 
   for (const r of rows) {
     if (!r) continue;
@@ -65,16 +91,35 @@ function computeLatestPeriodsFromRows(rows) {
     if (!prev || period > prev) best.set(fk, period);
   }
 
-  // Convert to plain object for JSON output
   const out = {};
   for (const [k, v] of best.entries()) out[k] = v;
   return out;
 }
 
+function compactUpstreamError(fetched) {
+  if (fetched?.error) return `Fetch error: ${String(fetched.error).slice(0, 600)}`;
+
+  const j = fetched?.json;
+  if (j && typeof j === "object" && j.ok === false && j.error) {
+    return String(j.error).slice(0, 900);
+  }
+
+  return String(fetched?.text || "").slice(0, 900);
+}
+
 export default async (request) => {
   const startedAt = new Date();
-  const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
 
+  // Optional: reject non-GET
+  if (request.method && request.method !== "GET" && request.method !== "HEAD") {
+    return jsonResponse(405, {
+      ok: false,
+      generated_at: startedAt.toISOString(),
+      error: "Method not allowed"
+    });
+  }
+
+  const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
   if (!baseUrl) {
     return jsonResponse(500, {
       ok: false,
@@ -83,113 +128,83 @@ export default async (request) => {
     });
   }
 
-  const srcUrl = `${baseUrl}/.netlify/functions/energy-prices-latest-with-fallback`;
+  const urls = {
+    energy_prices_latest_with_fallback: `${baseUrl}/.netlify/functions/energy-prices-latest-with-fallback`,
+    energy_prices_latest_ui_json: `${baseUrl}/api/energy_prices_latest_ui.json`
+  };
 
-  try {
-    const fetched = await fetchJsonWithDetails(srcUrl);
+  // Fetch upstreams (fast fail)
+  const [f1, f2] = await Promise.all([
+    fetchJsonWithDetails(urls.energy_prices_latest_with_fallback, { timeoutMs: 7000 }),
+    fetchJsonWithDetails(urls.energy_prices_latest_ui_json, { timeoutMs: 7000 })
+  ]);
 
-    // If upstream isn't OK HTTP-wise, surface a compact error
-    if (!fetched.okHttp) {
-      const upstreamError =
-        fetched.json && typeof fetched.json === "object" && fetched.json.ok === false && fetched.json.error
-          ? String(fetched.json.error)
-          : String(fetched.text || "").slice(0, 600);
-
-      return jsonResponse(500, {
-        ok: false,
-        generated_at: startedAt.toISOString(),
-        checks: {
-          energy_prices_latest_with_fallback: {
-            ok: false,
-            http_status: fetched.status
-          }
-        },
-        error: `Upstream failed: energy-prices-latest-with-fallback (HTTP ${fetched.status}). ${upstreamError}`
-      });
+  const checks = {
+    energy_prices_latest_with_fallback: {
+      ok: !!(f1.okHttp && f1.json && typeof f1.json === "object" && f1.json.ok !== false),
+      http_status: f1.status || 0
+    },
+    energy_prices_latest_ui_json: {
+      ok: !!(f2.okHttp && f2.json && typeof f2.json === "object" && f2.json.ok !== false),
+      http_status: f2.status || 0
     }
+  };
 
-    // HTTP ok but JSON may still be ok=false
-    const src = fetched.json;
-    if (!src || typeof src !== "object") {
-      return jsonResponse(500, {
-        ok: false,
-        generated_at: startedAt.toISOString(),
-        checks: {
-          energy_prices_latest_with_fallback: { ok: false, http_status: fetched.status }
-        },
-        error: "Upstream returned non-JSON or invalid JSON."
-      });
-    }
+  // If either check fails, return 500 so monitors alert.
+  const allOk = Object.values(checks).every((c) => c.ok);
 
-    if (src.ok === false) {
-      return jsonResponse(500, {
-        ok: false,
-        generated_at: startedAt.toISOString(),
-        checks: {
-          energy_prices_latest_with_fallback: { ok: false, http_status: fetched.status }
-        },
-        error: `Upstream ok=false: ${String(src.error || "unknown")}`
-      });
-    }
-
-    const rows = Array.isArray(src.rows_filled) ? src.rows_filled : [];
-    const latestByFuelKey = computeLatestPeriodsFromRows(rows);
-
-    // Optional: compute a few convenience counts
-    let direct = 0;
-    let fallback = 0;
-    let nullPrice = 0;
-
-    for (const r of rows) {
-      if (!r) continue;
-      if (r.price === null || r.price === undefined) nullPrice += 1;
-      if (r.is_fallback === true) fallback += 1;
-      else direct += 1;
-    }
-
-    // Make this endpoint cacheable lightly (optional).
-    // Since it is "status", keeping it mostly fresh helps monitoring.
-    // You can change to "no-store" if you want it always live.
-    const cacheControl = "public, max-age=0, s-maxage=60, stale-while-revalidate=300";
-
-    return jsonResponse(
-      200,
-      {
-        ok: true,
-        generated_at: startedAt.toISOString(),
-        checks: {
-          energy_prices_latest_with_fallback: {
-            ok: true,
-            http_status: fetched.status
-          }
-        },
-        upstream: {
-          url: "/.netlify/functions/energy-prices-latest-with-fallback",
-          upstream_generated_at: src.generated_at || null
-        },
-        latest: src.latest || null,
-        windows: src.windows || null,
-        counts: {
-          // Prefer the upstream counts if present, since that is “authoritative”
-          ...(src.counts || {}),
-          // Plus a few helpful breakdowns from rows_filled
-          rows_filled: rows.length,
-          direct_rows: direct,
-          fallback_rows: fallback,
-          null_price_rows: nullPrice
-        },
-        latest_period_by_fuel_key: latestByFuelKey
-      },
-      { cacheControl }
-    );
-  } catch (err) {
+  if (!allOk) {
     return jsonResponse(500, {
       ok: false,
       generated_at: startedAt.toISOString(),
-      checks: {
-        energy_prices_latest_with_fallback: { ok: false }
-      },
-      error: String(err?.message || err)
+      checks,
+      errors: {
+        energy_prices_latest_with_fallback: checks.energy_prices_latest_with_fallback.ok
+          ? null
+          : compactUpstreamError(f1),
+        energy_prices_latest_ui_json: checks.energy_prices_latest_ui_json.ok ? null : compactUpstreamError(f2)
+      }
     });
   }
+
+  // Build useful diagnostics from upstream
+  const src = f1.json;
+  const rows = Array.isArray(src.rows_filled) ? src.rows_filled : [];
+  const latestByFuelKey = computeLatestPeriodsFromRows(rows);
+
+  let direct = 0;
+  let fallback = 0;
+  let nullPrice = 0;
+  for (const r of rows) {
+    if (!r) continue;
+    if (r.price === null || r.price === undefined) nullPrice += 1;
+    if (r.is_fallback === true) fallback += 1;
+    else direct += 1;
+  }
+
+  return jsonResponse(200, {
+    ok: true,
+    generated_at: startedAt.toISOString(),
+    checks,
+    upstream: {
+      energy_prices_latest_with_fallback: {
+        url: "/.netlify/functions/energy-prices-latest-with-fallback",
+        upstream_generated_at: src.generated_at || null
+      },
+      energy_prices_latest_ui_json: {
+        url: "/api/energy_prices_latest_ui.json",
+        upstream_generated_at: f2.json?.meta?.generated_at || f2.json?.generated_at || null
+      }
+    },
+    latest: src.latest || null,
+    windows: src.windows || null,
+    counts: {
+      ...(src.counts || {}),
+      rows_filled: rows.length,
+      direct_rows: direct,
+      fallback_rows: fallback,
+      null_price_rows: nullPrice
+    },
+    latest_period_by_fuel_key: latestByFuelKey
+  });
 };
