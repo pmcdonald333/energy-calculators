@@ -15,13 +15,17 @@
 // - Does NOT re-fetch EIA directly.
 // - Returns non-2xx on failure so UptimeRobot alerts reliably.
 // - Uses no-store so CDN does NOT mask outages.
+// - Adds X-Robots-Tag: noindex, nofollow so these endpoints don’t get indexed.
+
+const X_ROBOTS_TAG_VALUE = "noindex, nofollow";
 
 function jsonResponse(status, obj, { cacheControl = "no-store" } = {}) {
   return new Response(JSON.stringify(obj, null, 2), {
     status,
     headers: {
       "content-type": "application/json",
-      "cache-control": cacheControl
+      "cache-control": cacheControl,
+      "x-robots-tag": X_ROBOTS_TAG_VALUE
     }
   });
 }
@@ -76,7 +80,7 @@ async function fetchJsonWithDetails(url, { timeoutMs = 6000 } = {}) {
 }
 
 function computeLatestPeriodsFromRows(rows) {
-  const best = new Map(); // dataset::fuel::sector -> bestPeriod
+  const best = new Map(); // datasets
 
   for (const r of rows) {
     if (!r) continue;
@@ -110,7 +114,7 @@ function compactUpstreamError(fetched) {
 export default async (request) => {
   const startedAt = new Date();
 
-  // Optional: reject non-GET
+  // Optional: reject non-GET/HEAD
   if (request.method && request.method !== "GET" && request.method !== "HEAD") {
     return jsonResponse(405, {
       ok: false,
@@ -162,7 +166,9 @@ export default async (request) => {
         energy_prices_latest_with_fallback: checks.energy_prices_latest_with_fallback.ok
           ? null
           : compactUpstreamError(f1),
-        energy_prices_latest_ui_json: checks.energy_prices_latest_ui_json.ok ? null : compactUpstreamError(f2)
+        energy_prices_latest_ui_json: checks.energy_prices_latest_ui_json.ok
+          ? null
+          : compactUpstreamError(f2)
       }
     });
   }
