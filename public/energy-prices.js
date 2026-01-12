@@ -5,6 +5,8 @@
 // - Direct-only toggle hides fallback rows
 // - Persists selection + toggle in localStorage + URL
 // - Refresh preserves selection
+// - Copy link button
+// - "Updated X ago" indicator based on meta.generated_at
 
 const API_URL = "/api/energy_prices_latest_ui.json";
 
@@ -121,12 +123,6 @@ function storeDirectOnly(v) {
   }
 }
 
-function setSelectedSummary() {
-  const el = $("selectedSummary");
-  if (!el) return;
-  el.textContent = selectedFuelKey || "—";
-}
-
 function parseFuelKey(fuelKey) {
   const parts = String(fuelKey || "").split("::");
   return {
@@ -169,19 +165,56 @@ function writeUrlParams({ fuelKey, directOnly }) {
   }
 }
 
+function makeDeepLink({ fuelKey, directOnly }) {
+  try {
+    const u = new URL(window.location.href);
+    if (fuelKey) u.searchParams.set(URL_PARAM_FUEL, fuelKey);
+    else u.searchParams.delete(URL_PARAM_FUEL);
+    u.searchParams.set(URL_PARAM_DIRECT, directOnly ? "1" : "0");
+    return u.toString();
+  } catch {
+    return window.location.href;
+  }
+}
+
+function formatUpdatedAgo(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(String(iso));
+  if (!Number.isFinite(t)) return "—";
+
+  const now = Date.now();
+  let diffMs = now - t;
+  if (!Number.isFinite(diffMs)) return "—";
+  if (diffMs < 0) diffMs = 0;
+
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 10) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
+}
+
 // State
 let lastData = null;
 let lastFuelKeysSignature = null;
 
-// Initial precedence:
-// - URL params override localStorage
+// Initial precedence: URL params override localStorage
 const initial = readUrlParams();
 let selectedFuelKey = initial.fuel || loadStoredFuelSelection();
-
 let directOnly =
   initial.directOnly !== null ? initial.directOnly : (loadStoredDirectOnly() ?? false);
 
 let isLoading = false;
+
+// for "Updated ago" ticking
+let updatedAgoTimer = null;
 
 function getDirectOnlyState() {
   return !!directOnly;
@@ -208,6 +241,19 @@ function chooseBestAvailableFuelKey(fuels, desiredKey) {
   return fuels[0].fuel_key || null;
 }
 
+function currentSelectedLabelFromData(data) {
+  const fuels = Array.isArray(data?.fuels) ? data.fuels : [];
+  const f = fuels.find((x) => x.fuel_key === selectedFuelKey);
+  if (f) return `${f.fuel} — ${f.sector}`;
+  return selectedFuelKey || "—";
+}
+
+function setSelectedSummary(data) {
+  const el = $("selectedSummary");
+  if (!el) return;
+  el.textContent = data ? currentSelectedLabelFromData(data) : (selectedFuelKey || "—");
+}
+
 function ensureDropdownPopulated(data) {
   const fuels = Array.isArray(data?.fuels) ? data.fuels : [];
   const sig = computeFuelKeysSignature(fuels);
@@ -232,14 +278,27 @@ function ensureDropdownPopulated(data) {
     sel.value = selectedFuelKey;
   }
   storeFuelSelection(selectedFuelKey);
-  setSelectedSummary();
 
   // keep URL synced
   writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
+
+  // update Selected chip
+  setSelectedSummary(data);
 }
 
 function renderMeta(data) {
   text($("generatedAt"), data?.meta?.generated_at || "—");
+  text($("updatedAgo"), formatUpdatedAgo(data?.meta?.generated_at || null));
+
+  // restart timer so it updates every 10s
+  if (updatedAgoTimer) {
+    clearInterval(updatedAgoTimer);
+    updatedAgoTimer = null;
+  }
+  updatedAgoTimer = setInterval(() => {
+    if (!lastData) return;
+    text($("updatedAgo"), formatUpdatedAgo(lastData?.meta?.generated_at || null));
+  }, 10_000);
 }
 
 function renderTable(data) {
@@ -329,10 +388,12 @@ async function refresh({ bustCache } = {}) {
   const btn = $("refreshBtn");
   const sel = $("fuelSelect");
   const toggle = $("directOnlyToggle");
+  const copyBtn = $("copyLinkBtn");
 
   if (btn) btn.disabled = true;
   if (sel) sel.disabled = true;
   if (toggle) toggle.disabled = true;
+  if (copyBtn) copyBtn.disabled = true;
 
   try {
     const data = await fetchLatest({ bustCache });
@@ -351,11 +412,31 @@ async function refresh({ bustCache } = {}) {
   } catch (err) {
     showError(err?.message || String(err));
     setPill(false, 0, 0, 0);
+    text($("updatedAgo"), "—");
   } finally {
     if (btn) btn.disabled = false;
     if (sel) sel.disabled = false;
     if (toggle) toggle.disabled = false;
+    if (copyBtn) copyBtn.disabled = false;
     isLoading = false;
+  }
+}
+
+async function copyCurrentLink() {
+  const url = makeDeepLink({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
+  try {
+    await navigator.clipboard.writeText(url);
+    const btn = $("copyLinkBtn");
+    if (btn) {
+      const old = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => {
+        btn.textContent = old || "Copy link";
+      }, 900);
+    }
+  } catch {
+    // Fallback: prompt
+    window.prompt("Copy this link:", url);
   }
 }
 
@@ -363,23 +444,25 @@ function init() {
   const sel = $("fuelSelect");
   const btn = $("refreshBtn");
   const toggle = $("directOnlyToggle");
+  const copyBtn = $("copyLinkBtn");
 
   // apply initial toggle state to UI + persistence + URL
   if (toggle) toggle.checked = !!directOnly;
   storeDirectOnly(!!directOnly);
   writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
-  setSelectedSummary();
+  setSelectedSummary(null);
 
   sel?.addEventListener("change", () => {
     selectedFuelKey = sel.value;
     storeFuelSelection(selectedFuelKey);
-    setSelectedSummary();
     writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
 
     if (lastData) {
       ensureDropdownPopulated(lastData);
       renderMeta(lastData);
       renderTable(lastData);
+    } else {
+      setSelectedSummary(null);
     }
   });
 
@@ -390,12 +473,15 @@ function init() {
 
     if (lastData) {
       renderTable(lastData);
-      // pill text changes based on direct-only; renderTable handles it
     }
   });
 
   btn?.addEventListener("click", () => {
     refresh({ bustCache: true });
+  });
+
+  copyBtn?.addEventListener("click", () => {
+    copyCurrentLink();
   });
 
   // Initial load (respects CDN cache)
