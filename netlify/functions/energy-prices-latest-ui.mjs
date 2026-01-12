@@ -1,6 +1,8 @@
 // netlify/functions/energy-prices-latest-ui.mjs
 //
-// Step 6: Production hardening for UI endpoint:
+// Step 7: API contract freeze + versioning (UI endpoint)
+// - Adds version + schema stamp
+// - Enforces contract invariants (fuels/geos counts + required keys)
 // - Deterministic output ordering (stable ETag)
 // - ETag support (If-None-Match -> 304)
 // - Cache-Control tuned for CDN + SWR
@@ -9,6 +11,10 @@
 
 import crypto from "node:crypto";
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
+
+const CONTRACT_VERSION = "v1";
+const EXPECTED_GEOS = 61;
+const EXPECTED_FUELS = 5;
 
 function sha256Hex(s) {
   return crypto.createHash("sha256").update(s, "utf8").digest("hex");
@@ -119,6 +125,12 @@ function normalizeIfNoneMatch(v) {
   return normalizeEtagToken(first);
 }
 
+function assertContract(condition, message) {
+  if (!condition) {
+    throw new Error(`CONTRACT_VIOLATION: ${message}`);
+  }
+}
+
 export default async (request) => {
   try {
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
@@ -140,20 +152,23 @@ export default async (request) => {
       geo_display_name: names[geo_code] || geo_code
     }));
 
-    // Pull step 4 output
+    // Contract: expected geo count
+    assertContract(
+      geos.length === EXPECTED_GEOS,
+      `expected geos=${EXPECTED_GEOS}, got ${geos.length}`
+    );
+
+    // Pull latest-with-fallback output
     const srcUrl = `${baseUrl}/.netlify/functions/energy-prices-latest-with-fallback`;
     const src = await fetchJsonOrThrow(srcUrl);
 
-    if (!src?.ok) {
-      throw new Error(
-        `energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`
-      );
-    }
+    assertContract(!!src && src.ok === true, `upstream ok!=true (${src?.error || "unknown"})`);
 
     const rows = Array.isArray(src?.rows_filled) ? src.rows_filled : [];
+    assertContract(Array.isArray(rows), "upstream rows_filled missing or invalid");
 
     // Fixed stable UI fuel order (combos=5)
-    // NOTE: Transportation fuels are now Retail (not Residential).
+    // NOTE: Transportation fuels are Retail (not Residential).
     const CANONICAL_FUELS = [
       { dataset: "heating_fuels_latest", fuel: "Heating Oil", sector: "Residential" },
       { dataset: "heating_fuels_latest", fuel: "Propane", sector: "Residential" },
@@ -161,6 +176,11 @@ export default async (request) => {
       { dataset: "transportation_fuels_latest", fuel: "Diesel", sector: "Retail" },
       { dataset: "transportation_fuels_latest", fuel: "Gasoline", sector: "Retail" }
     ];
+
+    assertContract(
+      CANONICAL_FUELS.length === EXPECTED_FUELS,
+      `expected fuels=${EXPECTED_FUELS}, got ${CANONICAL_FUELS.length}`
+    );
 
     const fuels = CANONICAL_FUELS.map((f) => ({
       fuel_key: makeFuelKey(f.dataset, f.fuel, f.sector),
@@ -183,6 +203,14 @@ export default async (request) => {
       const fk = makeFuelKey(dataset, fuel, sector);
       const prev = bestPeriodByFuelKey.get(fk);
       if (!prev || period > prev) bestPeriodByFuelKey.set(fk, period);
+    }
+
+    // Contract: every canonical fuel key must have a period
+    for (const fk of fuelKeys) {
+      assertContract(
+        !!bestPeriodByFuelKey.get(fk),
+        `missing best period for fuel_key=${fk} (upstream rows_filled may have changed)`
+      );
     }
 
     // Initialize matrix
@@ -225,9 +253,27 @@ export default async (request) => {
       };
     }
 
+    // Contract: matrix dimensions
+    for (const fk of fuelKeys) {
+      assertContract(!!values[fk], `values missing fuel_key=${fk}`);
+      const keys = Object.keys(values[fk] || {});
+      assertContract(
+        keys.length === EXPECTED_GEOS,
+        `values[${fk}] expected ${EXPECTED_GEOS} geos, got ${keys.length}`
+      );
+    }
+
     // Build deterministic response body (important for stable ETag)
     const body = {
       ok: true,
+      version: CONTRACT_VERSION,
+      schema: {
+        name: "energy_prices_latest_ui",
+        fuels: EXPECTED_FUELS,
+        geos: EXPECTED_GEOS,
+        fuel_key_format: "dataset::fuel::sector",
+        value_cell: ["price", "units", "period", "is_fallback", "fallback_from_geo_code"]
+      },
       meta: {
         generated_at: new Date().toISOString(),
         latest: src.latest || null,
@@ -244,6 +290,16 @@ export default async (request) => {
       fuels,
       values
     };
+
+    // Contract: counts must match expectations
+    assertContract(
+      body.meta.counts.fuels === EXPECTED_FUELS,
+      `meta.counts.fuels expected ${EXPECTED_FUELS}, got ${body.meta.counts.fuels}`
+    );
+    assertContract(
+      body.meta.counts.geos === EXPECTED_GEOS,
+      `meta.counts.geos expected ${EXPECTED_GEOS}, got ${body.meta.counts.geos}`
+    );
 
     // ETag based on content EXCEPT generated_at (so it stays stable)
     const etagPayload = {
@@ -279,7 +335,7 @@ export default async (request) => {
   } catch (err) {
     return jsonResponse(
       500,
-      { ok: false, error: String(err?.message || err) },
+      { ok: false, error: String(err?.message || err), version: CONTRACT_VERSION },
       { extraHeaders: { "cache-control": "no-store" } }
     );
   }
