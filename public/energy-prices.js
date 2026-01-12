@@ -19,10 +19,12 @@ function $(id) {
 }
 
 function text(el, v) {
+  if (!el) return;
   el.textContent = v == null ? "" : String(v);
 }
 
 function clearChildren(el) {
+  if (!el) return;
   while (el.firstChild) el.removeChild(el.firstChild);
 }
 
@@ -35,6 +37,8 @@ function fmt(v) {
 
 function setPill(ok, fallbackCount, shownCount, totalGeos) {
   const pill = $("statusPill");
+  if (!pill) return;
+
   pill.classList.remove("ok", "fb");
 
   if (!ok) {
@@ -43,8 +47,6 @@ function setPill(ok, fallbackCount, shownCount, totalGeos) {
     return;
   }
 
-  // If direct-only is ON, fallbackCount is computed over SHOWN rows only,
-  // but we also want a helpful label if we’re filtering.
   const directOnly = getDirectOnlyState();
   if (directOnly) {
     pill.classList.add("ok");
@@ -63,12 +65,14 @@ function setPill(ok, fallbackCount, shownCount, totalGeos) {
 
 function showError(err) {
   const box = $("errorBox");
+  if (!box) return;
   box.style.display = "block";
   box.textContent = String(err);
 }
 
 function hideError() {
   const box = $("errorBox");
+  if (!box) return;
   box.style.display = "none";
   box.textContent = "";
 }
@@ -108,17 +112,19 @@ function loadStoredDirectOnly() {
     return null;
   }
 }
-function setSelectedSummary() {
-  const el = $("selectedSummary");
-  if (!el) return;
-  el.textContent = selectedFuelKey || "—";
-}
+
 function storeDirectOnly(v) {
   try {
     localStorage.setItem(STORAGE_KEY_DIRECT_ONLY, v ? "1" : "0");
   } catch {
     // ignore
   }
+}
+
+function setSelectedSummary() {
+  const el = $("selectedSummary");
+  if (!el) return;
+  el.textContent = selectedFuelKey || "—";
 }
 
 function parseFuelKey(fuelKey) {
@@ -135,6 +141,7 @@ function readUrlParams() {
     const u = new URL(window.location.href);
     const fuel = u.searchParams.get(URL_PARAM_FUEL);
     const direct = u.searchParams.get(URL_PARAM_DIRECT);
+
     return {
       fuel: fuel ? String(fuel) : null,
       directOnly:
@@ -207,7 +214,7 @@ function ensureDropdownPopulated(data) {
   const sel = $("fuelSelect");
 
   // Rebuild only if fuels changed
-  if (sig && sig !== lastFuelKeysSignature) {
+  if (sel && sig && sig !== lastFuelKeysSignature) {
     lastFuelKeysSignature = sig;
 
     clearChildren(sel);
@@ -221,13 +228,14 @@ function ensureDropdownPopulated(data) {
 
   selectedFuelKey = chooseBestAvailableFuelKey(fuels, selectedFuelKey);
 
-  if (selectedFuelKey) {
+  if (sel && selectedFuelKey) {
     sel.value = selectedFuelKey;
-    storeFuelSelection(selectedFuelKey);
   }
+  storeFuelSelection(selectedFuelKey);
+  setSelectedSummary();
 
   // keep URL synced
-  writeUrlParams({ fuelKey: selectedFuelKey, directOnly });
+  writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
 }
 
 function renderMeta(data) {
@@ -283,7 +291,7 @@ function renderTable(data) {
       <td>${directOrFallback}</td>
       <td>${isFallback ? fbFrom : "—"}</td>
     `;
-    tbody.appendChild(tr);
+    tbody?.appendChild(tr);
   }
 
   setPill(!!data?.ok, fallbackCountShown, shownRows, geos.length);
@@ -317,18 +325,25 @@ async function refresh({ bustCache } = {}) {
   isLoading = true;
 
   hideError();
-  $("refreshBtn").disabled = true;
-  $("fuelSelect").disabled = true;
-  $("directOnlyToggle").disabled = true;
+
+  const btn = $("refreshBtn");
+  const sel = $("fuelSelect");
+  const toggle = $("directOnlyToggle");
+
+  if (btn) btn.disabled = true;
+  if (sel) sel.disabled = true;
+  if (toggle) toggle.disabled = true;
 
   try {
     const data = await fetchLatest({ bustCache });
     lastData = data;
 
     // Capture current UI state first
-    const sel = $("fuelSelect");
     if (sel?.value) selectedFuelKey = sel.value;
-    directOnly = !!$("directOnlyToggle").checked;
+    if (toggle) directOnly = !!toggle.checked;
+
+    storeFuelSelection(selectedFuelKey);
+    storeDirectOnly(!!directOnly);
 
     ensureDropdownPopulated(data);
     renderMeta(data);
@@ -337,9 +352,9 @@ async function refresh({ bustCache } = {}) {
     showError(err?.message || String(err));
     setPill(false, 0, 0, 0);
   } finally {
-    $("refreshBtn").disabled = false;
-    $("fuelSelect").disabled = false;
-    $("directOnlyToggle").disabled = false;
+    if (btn) btn.disabled = false;
+    if (sel) sel.disabled = false;
+    if (toggle) toggle.disabled = false;
     isLoading = false;
   }
 }
@@ -350,14 +365,16 @@ function init() {
   const toggle = $("directOnlyToggle");
 
   // apply initial toggle state to UI + persistence + URL
-  toggle.checked = !!directOnly;
+  if (toggle) toggle.checked = !!directOnly;
   storeDirectOnly(!!directOnly);
   writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
+  setSelectedSummary();
 
-  sel.addEventListener("change", () => {
+  sel?.addEventListener("change", () => {
     selectedFuelKey = sel.value;
     storeFuelSelection(selectedFuelKey);
-    writeUrlParams({ fuelKey: selectedFuelKey, directOnly });
+    setSelectedSummary();
+    writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
 
     if (lastData) {
       ensureDropdownPopulated(lastData);
@@ -366,17 +383,18 @@ function init() {
     }
   });
 
-  toggle.addEventListener("change", () => {
+  toggle?.addEventListener("change", () => {
     directOnly = !!toggle.checked;
-    storeDirectOnly(directOnly);
-    writeUrlParams({ fuelKey: selectedFuelKey, directOnly });
+    storeDirectOnly(!!directOnly);
+    writeUrlParams({ fuelKey: selectedFuelKey, directOnly: !!directOnly });
 
     if (lastData) {
       renderTable(lastData);
+      // pill text changes based on direct-only; renderTable handles it
     }
   });
 
-  btn.addEventListener("click", () => {
+  btn?.addEventListener("click", () => {
     refresh({ bustCache: true });
   });
 
