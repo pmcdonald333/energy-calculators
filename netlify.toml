@@ -2,53 +2,67 @@
   publish = "public"
   functions = "netlify/functions"
 
+# Prevent indexing of your status pages
 [[headers]]
   for = "/status/*"
   [headers.values]
     X-Robots-Tag = "noindex, nofollow"
+
+# Prevent indexing of your API JSON endpoints (recommended)
 [[headers]]
   for = "/api/*"
   [headers.values]
     X-Robots-Tag = "noindex, nofollow"
+
 [functions."update-data"]
-schedule = "@daily"
+  schedule = "@daily"
+
 [[redirects]]
-from = "/api/system_status"
-to = "/.netlify/functions/system-status"
-status = 200
+  from = "/api/system_status"
+  to = "/.netlify/functions/system-status"
+  status = 200
+
 [[redirects]]
-from = "/api/electricity_rates_latest.json"
-to = "/.netlify/functions/electricity-rates"
-status = 200
+  from = "/api/electricity_rates_latest.json"
+  to = "/.netlify/functions/electricity-rates"
+  status = 200
+
 [[redirects]]
-from = "/api/efficiency_all_other_costs_latest.json"
-to = "/.netlify/functions/efficiency-all-other-costs"
-status = 200
+  from = "/api/efficiency_all_other_costs_latest.json"
+  to = "/.netlify/functions/efficiency-all-other-costs"
+  status = 200
+
 [[redirects]]
-from = "/api/heating_fuels_latest.json"
-to = "/.netlify/functions/heating-fuels-latest"
-status = 200
+  from = "/api/heating_fuels_latest.json"
+  to = "/.netlify/functions/heating-fuels-latest"
+  status = 200
+
 [[redirects]]
-from = "/api/transportation_fuels_latest.json"
-to = "/.netlify/functions/transportation-fuels-latest"
-status = 200
+  from = "/api/transportation_fuels_latest.json"
+  to = "/.netlify/functions/transportation-fuels-latest"
+  status = 200
+
 [[redirects]]
-from = "/api/energy_prices_latest.json"
-to = "/.netlify/functions/energy-prices-latest"
-status = 200
+  from = "/api/energy_prices_latest.json"
+  to = "/.netlify/functions/energy-prices-latest"
+  status = 200
+
 [[redirects]]
-from = "/api/energy_prices_latest_with_fallback.json"
-to = "/.netlify/functions/energy-prices-latest-with-fallback"
-status = 200
+  from = "/api/energy_prices_latest_with_fallback.json"
+  to = "/.netlify/functions/energy-prices-latest-with-fallback"
+  status = 200
+
 [[redirects]]
-from = "/api/energy_prices_latest_ui.json"
-to = "/.netlify/functions/energy-prices-latest-ui"
-status = 200
+  from = "/api/energy_prices_latest_ui.json"
+  to = "/.netlify/functions/energy-prices-latest-ui"
+  status = 200
+
 [[redirects]]
-from = "/energy-prices"
-to = "/energy-prices.html"
-status = 200
+  from = "/energy-prices"
+  to = "/energy-prices.html"
+  status = 200
+
 [[redirects]]
-from = "/api/energy_prices_status.json"
-to = "/.netlify/functions/energy-prices-status"
-status = 200
+  from = "/api/energy_prices_status.json"
+  to = "/.netlify/functions/energy-prices-status"
+  status = 200
