@@ -1,11 +1,14 @@
 // public/energy-prices.js
 //
 // UI for /api/energy_prices_latest_ui.json
-// - Stable dropdown selection (never snaps back)
-// - Refresh fetches latest but preserves selection
-// - Renders table for selected fuel_key
+// Hardened selection behavior:
+// - Never snaps back to first option unless absolutely necessary
+// - Persists selection in localStorage
+// - Handles fuel_key changes (e.g., Residential -> Retail) by best-effort matching
+// - Refresh preserves selection
 
 const API_URL = "/api/energy_prices_latest_ui.json";
+const STORAGE_KEY = "energy_prices_selected_fuel_key";
 
 function $(id) {
   return document.getElementById(id);
@@ -56,46 +59,99 @@ function hideError() {
 }
 
 function buildFuelOptionLabel(f) {
-  // Example: "Gasoline — Residential"
+  // Example: "Gasoline — Retail"
   return `${f.fuel} — ${f.sector}`;
+}
+
+function computeFuelKeysSignature(fuels) {
+  return fuels.map((f) => f.fuel_key).join("|");
+}
+
+function loadStoredSelection() {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    return v ? String(v) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSelection(fuelKey) {
+  try {
+    if (fuelKey) localStorage.setItem(STORAGE_KEY, String(fuelKey));
+  } catch {
+    // ignore
+  }
+}
+
+function parseFuelKey(fuelKey) {
+  // dataset::fuel::sector
+  const parts = String(fuelKey || "").split("::");
+  return {
+    dataset: parts[0] || null,
+    fuel: parts[1] || null,
+    sector: parts[2] || null
+  };
 }
 
 // Keep these across refreshes
 let lastData = null;
 let lastFuelKeysSignature = null;
-let selectedFuelKey = null;
+let selectedFuelKey = loadStoredSelection(); // start from storage if present
+let isLoading = false;
 
-function computeFuelKeysSignature(fuels) {
-  // If this signature changes, we rebuild the dropdown.
-  return fuels.map((f) => f.fuel_key).join("|");
+function chooseBestAvailableFuelKey(fuels, desiredKey) {
+  if (!Array.isArray(fuels) || fuels.length === 0) return null;
+
+  const keys = new Set(fuels.map((f) => f.fuel_key));
+
+  // 1) Exact match
+  if (desiredKey && keys.has(desiredKey)) return desiredKey;
+
+  // 2) Best-effort match by dataset + fuel (ignore sector changes like Residential->Retail)
+  if (desiredKey) {
+    const want = parseFuelKey(desiredKey);
+    if (want.dataset && want.fuel) {
+      const candidate = fuels.find(
+        (f) => f.dataset === want.dataset && f.fuel === want.fuel
+      );
+      if (candidate?.fuel_key) return candidate.fuel_key;
+    }
+  }
+
+  // 3) Fall back to first option
+  return fuels[0].fuel_key || null;
 }
 
 function ensureDropdownPopulated(data) {
   const fuels = Array.isArray(data?.fuels) ? data.fuels : [];
   const sig = computeFuelKeysSignature(fuels);
 
-  // If same fuels as last time, do not rebuild (prevents selection snapping)
-  if (sig && sig === lastFuelKeysSignature) return;
-
-  lastFuelKeysSignature = sig;
-
   const sel = $("fuelSelect");
-  clearChildren(sel);
 
-  for (const f of fuels) {
-    const opt = document.createElement("option");
-    opt.value = f.fuel_key;
-    opt.textContent = buildFuelOptionLabel(f);
-    sel.appendChild(opt);
+  // Rebuild ONLY if fuels changed
+  if (sig && sig !== lastFuelKeysSignature) {
+    lastFuelKeysSignature = sig;
+
+    clearChildren(sel);
+    for (const f of fuels) {
+      const opt = document.createElement("option");
+      opt.value = f.fuel_key;
+      opt.textContent = buildFuelOptionLabel(f);
+      sel.appendChild(opt);
+    }
   }
 
-  // Preserve selection if possible; otherwise default to first fuel
-  const availableKeys = new Set(fuels.map((f) => f.fuel_key));
-  if (!selectedFuelKey || !availableKeys.has(selectedFuelKey)) {
-    selectedFuelKey = fuels[0]?.fuel_key || null;
+  // Always ensure selection is valid and applied (even if we didn't rebuild)
+  selectedFuelKey = chooseBestAvailableFuelKey(fuels, selectedFuelKey);
+  if (selectedFuelKey) {
+    sel.value = selectedFuelKey;
+    storeSelection(selectedFuelKey);
   }
+}
 
-  if (selectedFuelKey) sel.value = selectedFuelKey;
+function renderMeta(data) {
+  text($("generatedAt"), data?.meta?.generated_at || "—");
 }
 
 function renderTable(data) {
@@ -105,25 +161,13 @@ function renderTable(data) {
   const geos = Array.isArray(data?.geos) ? data.geos : [];
   const values = data?.values && typeof data.values === "object" ? data.values : {};
 
-  if (!selectedFuelKey || !values[selectedFuelKey]) {
-    // No data for selection
-    for (const g of geos) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${fmt(g.geo_display_name)}<div class="mono">${fmt(g.geo_code)}</div></td>
-        <td>—</td><td>—</td><td>—</td><td class="mono">—</td><td>—</td>
-      `;
-      tbody.appendChild(tr);
-    }
-    setPill(!!data?.ok, geos.length);
-    return;
-  }
+  const grid = selectedFuelKey ? values[selectedFuelKey] : null;
 
   let fallbackCount = 0;
 
   for (const g of geos) {
     const geo = g.geo_code;
-    const cell = values[selectedFuelKey][geo] || null;
+    const cell = grid ? grid[geo] : null;
 
     const price = cell?.price ?? null;
     const units = cell?.units ?? null;
@@ -139,10 +183,9 @@ function renderTable(data) {
         ? "—"
         : String(cell.fallback_from_geo_code);
 
-    const tr = document.createElement("tr");
-
     const directOrFallback = isFallback ? "fallback" : "direct";
 
+    const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>
         ${fmt(g.geo_display_name)}
@@ -154,21 +197,14 @@ function renderTable(data) {
       <td>${directOrFallback}</td>
       <td>${isFallback ? fbFrom : "—"}</td>
     `;
-
     tbody.appendChild(tr);
   }
 
   setPill(!!data?.ok, fallbackCount);
 }
 
-function renderMeta(data) {
-  text($("generatedAt"), data?.meta?.generated_at || "—");
-}
-
-async function fetchLatest() {
-  // Use cache-busting query only on manual refresh to bypass edge cache if desired.
-  // (But you can remove this if you WANT caching behavior always.)
-  const url = `${API_URL}?t=${Date.now()}`;
+async function fetchLatest({ bustCache } = {}) {
+  const url = bustCache ? `${API_URL}?t=${Date.now()}` : API_URL;
 
   const res = await fetch(url, {
     headers: { accept: "application/json" },
@@ -190,12 +226,21 @@ async function fetchLatest() {
   return json;
 }
 
-async function refresh() {
+async function refresh({ bustCache } = {}) {
+  if (isLoading) return;
+  isLoading = true;
+
   hideError();
+  $("refreshBtn").disabled = true;
+  $("fuelSelect").disabled = true;
 
   try {
-    const data = await fetchLatest();
+    const data = await fetchLatest({ bustCache });
     lastData = data;
+
+    // Keep whatever user last chose (from select/localStorage), then reconcile against new fuels
+    const sel = $("fuelSelect");
+    if (sel?.value) selectedFuelKey = sel.value;
 
     ensureDropdownPopulated(data);
     renderMeta(data);
@@ -203,34 +248,35 @@ async function refresh() {
   } catch (err) {
     showError(err?.message || String(err));
     setPill(false, 0);
+  } finally {
+    $("refreshBtn").disabled = false;
+    $("fuelSelect").disabled = false;
+    isLoading = false;
   }
-}
-
-function renderFromExistingData() {
-  if (!lastData) return;
-  ensureDropdownPopulated(lastData);
-  renderMeta(lastData);
-  renderTable(lastData);
 }
 
 function init() {
   const sel = $("fuelSelect");
   const btn = $("refreshBtn");
 
-  // Change selection without rebuilding options
   sel.addEventListener("change", () => {
     selectedFuelKey = sel.value;
-    renderFromExistingData();
+    storeSelection(selectedFuelKey);
+    if (lastData) {
+      // No re-fetch: just re-render
+      ensureDropdownPopulated(lastData);
+      renderMeta(lastData);
+      renderTable(lastData);
+    }
   });
 
   btn.addEventListener("click", () => {
-    // Keep current selection and refresh data
-    selectedFuelKey = sel.value;
-    refresh();
+    // Bust cache on manual refresh
+    refresh({ bustCache: true });
   });
 
-  // Initial load
-  refresh();
+  // Initial load (no cache-bust; respects CDN)
+  refresh({ bustCache: false });
 }
 
 init();
