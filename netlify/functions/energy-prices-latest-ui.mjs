@@ -123,7 +123,9 @@ export default async (request) => {
   try {
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
     if (!baseUrl) {
-      throw new Error("Could not determine baseUrl (process.env.URL missing and request origin unavailable).");
+      throw new Error(
+        "Could not determine baseUrl (process.env.URL missing and request origin unavailable)."
+      );
     }
 
     // Locked geo configs
@@ -143,18 +145,21 @@ export default async (request) => {
     const src = await fetchJsonOrThrow(srcUrl);
 
     if (!src?.ok) {
-      throw new Error(`energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`);
+      throw new Error(
+        `energy-prices-latest-with-fallback ok=false: ${String(src?.error || "unknown")}`
+      );
     }
 
     const rows = Array.isArray(src?.rows_filled) ? src.rows_filled : [];
 
     // Fixed stable UI fuel order (combos=5)
+    // NOTE: Transportation fuels are now Retail (not Residential).
     const CANONICAL_FUELS = [
       { dataset: "heating_fuels_latest", fuel: "Heating Oil", sector: "Residential" },
       { dataset: "heating_fuels_latest", fuel: "Propane", sector: "Residential" },
       { dataset: "heating_fuels_latest", fuel: "Natural Gas", sector: "Residential" },
-      { dataset: "transportation_fuels_latest", fuel: "Diesel", sector: "Residential" },
-      { dataset: "transportation_fuels_latest", fuel: "Gasoline", sector: "Residential" }
+      { dataset: "transportation_fuels_latest", fuel: "Diesel", sector: "Retail" },
+      { dataset: "transportation_fuels_latest", fuel: "Gasoline", sector: "Retail" }
     ];
 
     const fuels = CANONICAL_FUELS.map((f) => ({
