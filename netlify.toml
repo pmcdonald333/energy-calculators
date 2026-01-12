@@ -21,10 +21,6 @@ from = "/api/efficiency_all_other_costs_latest.json"
 to = "/.netlify/functions/efficiency-all-other-costs"
 status = 200
 [[redirects]]
-from = "/api/electricity_rates_latest.json"
-to = "/.netlify/functions/electricity-rates"
-status = 200
-[[redirects]]
 from = "/api/heating_fuels_latest.json"
 to = "/.netlify/functions/heating-fuels-latest"
 status = 200
