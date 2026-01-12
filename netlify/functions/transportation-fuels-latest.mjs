@@ -16,6 +16,10 @@
 // Tightening:
 // - Latest week chosen from rows with numeric values (after selecting best process)
 // - Deduplicate output rows by (geo_code, fuel, period)
+//
+// Contract:
+// - sector is a stable UI label ("Retail") for transportation fuels
+// - source_process preserves the upstream EIA process code (e.g., PTE)
 
 import { loadAndValidateGeoConfigs } from "./_lib/config-validators.js";
 
@@ -47,10 +51,13 @@ function toNumberOrNull(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   if (typeof v !== "string") return null;
+
   const t = v.trim();
   if (!t) return null;
+
   const lower = t.toLowerCase();
   if (lower === "null" || lower === "na" || lower === "n/a" || t === "." || t === "-") return null;
+
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
 }
@@ -126,16 +133,11 @@ function buildPetroleumGndUrl({ apiKey, duoareas, products, start }) {
   params.set("frequency", "weekly");
   params.set("data[0]", "value");
 
-  // Products
   for (const p of products) params.append("facets[product][]", p);
-
-  // Duoareas (chunked)
   for (const d of duoareas) params.append("facets[duoarea][]", d);
 
-  // Window start
   params.set("start", start);
 
-  // Deterministic sorting
   params.set("sort[0][column]", "period");
   params.set("sort[0][direction]", "desc");
   params.set("sort[1][column]", "duoarea");
@@ -144,7 +146,6 @@ function buildPetroleumGndUrl({ apiKey, duoareas, products, start }) {
   params.set("sort[2][direction]", "asc");
 
   params.set("offset", "0");
-  // Keep below “huge” sizes; chunking already multiplies requests.
   params.set("length", "3000");
 
   return `${base}?${params.toString()}`;
@@ -179,8 +180,10 @@ function dedupeLatestRows(rows) {
 }
 
 function pickBestProcess(rowsWithNumericValues) {
-  // Prefer retail if present, else fall back to any process that has numeric values.
-  const preferred = ["RRP", "PRS"]; // PRS kept as a fallback preference only
+  // Prefer transportation retail-like processes if present.
+  // In practice, EIA often uses PTE for gasoline/diesel.
+  const preferred = ["PTE", "RRP", "PRS"];
+
   const counts = new Map();
   for (const r of rowsWithNumericValues) {
     const proc = r?.process ? String(r.process) : "";
@@ -206,7 +209,8 @@ function pickBestProcess(rowsWithNumericValues) {
 }
 
 function sectorLabelFromProcess(proc) {
-  if (!proc) return "Unknown";
+  if (!proc) return "Retail";
+  if (proc === "PTE") return "Retail";
   if (proc === "RRP") return "Retail";
   if (proc === "PRS") return "Residential";
   return proc; // deterministic fallback
@@ -218,7 +222,9 @@ export default async (request) => {
 
     const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || originFromRequest(request);
     if (!baseUrl) {
-      throw new Error("Could not determine baseUrl (process.env.URL missing and request origin unavailable).");
+      throw new Error(
+        "Could not determine baseUrl (process.env.URL missing and request origin unavailable)."
+      );
     }
 
     const cfg = await loadAndValidateGeoConfigs({ baseUrl });
@@ -239,11 +245,10 @@ export default async (request) => {
       EPMR: "Gasoline"
     };
 
-    // Start windows (same spirit as your other functions, but deterministic)
+    // Deterministic window candidates
     const startCandidates = [26, 52, 104].map(startForWeeksBack);
     const triedStarts = [];
 
-    // Chunking to avoid EIA 500s
     const DUOAREA_CHUNK_SIZE = 12;
     const duoareaChunks = chunkArray(accept.accepted_duoarea_petroleum_gnd, DUOAREA_CHUNK_SIZE);
 
@@ -251,7 +256,6 @@ export default async (request) => {
     let urls = [];
     let chosenStart = null;
 
-    // Try multiple start windows until we can compute latest week with numeric values
     let latestWeek = null;
     let chosenProcess = null;
 
@@ -270,23 +274,17 @@ export default async (request) => {
         thisRows.push(...rows);
       }
 
-      // Keep our products
       const prodRows = thisRows.filter((r) => r && PRODUCTS.includes(r.product));
-
-      // Find numeric rows first
       const numericRows = prodRows.filter((r) => toNumberOrNull(r?.value) !== null);
 
-      // Select the best process based on numeric rows
       const proc = pickBestProcess(numericRows);
 
-      // If we found a process, try to pick latest week within that process
       let latest = null;
       if (proc) {
         const numericProcRows = numericRows.filter((r) => String(r.process || "") === proc);
         latest = pickLatestPeriod(numericProcRows);
       }
 
-      // If still nothing, try latest week across ANY numeric rows (no process filter)
       if (!latest) {
         latest = pickLatestPeriod(numericRows);
       }
@@ -296,23 +294,19 @@ export default async (request) => {
         allRows = thisRows;
         urls = thisUrls;
         latestWeek = latest;
-        chosenProcess = proc; // may be null if we had to go process-agnostic
+        chosenProcess = proc;
         break;
       }
     }
 
     if (!latestWeek) {
       throw new Error(
-        `EIA_GND_NO_DATA: could not determine latest weekly period with numeric values (tried starts: ${triedStarts.join(
-          ", "
-        )}; last=${triedStarts[triedStarts.length - 1]})`
+        `EIA_GND_NO_DATA: could not determine latest weekly period with numeric values (tried starts: attaching disabled here; last=${triedStarts[triedStarts.length - 1]})`
       );
     }
 
-    // Now build latest rows for output
     const prodRows = allRows.filter((r) => r && PRODUCTS.includes(r.product));
 
-    // If we selected a process, constrain to it; otherwise allow any process.
     const filtered = chosenProcess
       ? prodRows.filter((r) => String(r.process || "") === chosenProcess)
       : prodRows;
@@ -325,23 +319,29 @@ export default async (request) => {
       const geo_code = duoToGeo[duoarea] || null;
       if (!geo_code) continue;
 
+      const proc = r?.process ? String(r.process) : null;
+
       out.push({
         fuel: fuelNameByProduct[String(r.product)] || String(r.product),
-        sector: sectorLabelFromProcess(chosenProcess || (r.process ? String(r.process) : null)),
+
+        // IMPORTANT: stable UI label, not raw process code
+        sector: sectorLabelFromProcess(proc),
+
         geo_code,
         geo_display_name: names[geo_code] || geo_code,
         period: String(r.period),
         price: toNumberOrNull(r.value),
-        price_units: r.units || null, // usually $/GAL
+        price_units: r.units || null,
         source_route: "petroleum/pri/gnd (weekly)",
-        source_process: r.process || null,
+
+        // Traceability
+        source_process: proc,
         source_series: r.series || null
       });
     }
 
     const deduped = dedupeLatestRows(out);
 
-    // Deterministic sort
     deduped.sort((a, b) => {
       if (a.fuel !== b.fuel) return a.fuel < b.fuel ? -1 : 1;
       if (a.geo_code !== b.geo_code) return a.geo_code < b.geo_code ? -1 : 1;
@@ -355,8 +355,7 @@ export default async (request) => {
       latest: { petroleum_week: latestWeek },
       windows: { petroleum_start: chosenStart, tried_starts: triedStarts },
       selection: {
-        chosen_process: chosenProcess || null,
-        chosen_sector_label: sectorLabelFromProcess(chosenProcess)
+        chosen_process: chosenProcess || null
       },
       sources: { petroleum_gnd_urls: urls.map(redactApiKeyFromUrlString) },
       counts: {
