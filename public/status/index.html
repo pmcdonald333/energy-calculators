@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="robots" content="noindex,nofollow" />
     <title>System Status</title>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-GMT2NNZTNM"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-GMT2NNZTNM");
+    </script>
+
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
       .row { display:flex; gap: 16px; flex-wrap: wrap; }
@@ -27,9 +39,10 @@
       .btn { display:inline-block; padding: 8px 10px; border-radius: 10px; border:1px solid #ddd; text-decoration: none; color: inherit; }
     </style>
   </head>
+
   <body>
     <h1>System Status</h1>
-    <p class="muted">Operator dashboard. Data from <span class="mono">/data/system_status.json</span>.</p>
+    <p class="muted">Operator dashboard. Data from <span class="mono">/api/system_status</span> (fallback: <span class="mono">/data/system_status.json</span>).</p>
 
     <div id="top" class="row"></div>
 
@@ -56,7 +69,8 @@
     </div>
 
     <p style="margin-top:20px;">
-      <a class="btn" href="/data/system_status.json" target="_blank" rel="noopener">Open system_status.json</a>
+      <a class="btn" href="/api/system_status" target="_blank" rel="noopener">Open live status (API)</a>
+      <a class="btn" href="/data/system_status.json" target="_blank" rel="noopener" style="margin-left:8px;">Open seeded status (static)</a>
     </p>
 
     <script>
@@ -75,11 +89,11 @@
 
       async function main() {
         let res = await fetch("/api/system_status", { cache: "no-store" });
-if (!res.ok) {
-  // fallback to seeded static JSON
-  res = await fetch("/data/system_status.json", { cache: "no-store" });
-}
-        if (!res.ok) throw new Error("Failed to load /data/system_status.json (" + res.status + ")");
+        if (!res.ok) {
+          // fallback to seeded static JSON
+          res = await fetch("/data/system_status.json", { cache: "no-store" });
+        }
+        if (!res.ok) throw new Error("Failed to load status (" + res.status + ")");
         const d = await res.json();
 
         // Top cards
@@ -136,12 +150,18 @@ if (!res.ok) {
                     <details>
                       <summary class="muted">Details</summary>
                       <div class="muted" style="margin-top:8px;">
-                        Schema valid: <span class="${statusTextClass(a.validation?.schema_valid ? "OK":"ERROR")}">${a.validation?.schema_valid ? "true":"false"}</span><br/>
-                        Complete coverage: <span class="${statusTextClass(a.validation?.complete_coverage ? "OK":"WARN")}">${a.validation?.complete_coverage ? "true":"false"}</span><br/>
-                        Missing keys: <span class="mono">${(a.validation?.missing_keys ?? []).join(", ") || "—"}</span><br/>
-                        Range OK: <span class="${statusTextClass(a.validation?.range_ok ? "OK":"WARN")}">${a.validation?.range_ok ? "true":"false"}</span><br/>
-                        Delta OK: <span class="${statusTextClass(a.validation?.delta_ok ? "OK":"WARN")}">${a.validation?.delta_ok ? "true":"false"}</span><br/>
-                        Fallback: <span class="mono">${a.fallback?.active ? "active" : "inactive"}</span> — ${fmt(a.fallback?.reason)}
+                        Schema valid:
+                        <span class="${statusTextClass(a.validation?.schema_valid ? "OK" : "ERROR")}">${a.validation?.schema_valid ? "true" : "false"}</span><br/>
+                        Complete coverage:
+                        <span class="${statusTextClass(a.validation?.complete_coverage ? "OK" : "WARN")}">${a.validation?.complete_coverage ? "true" : "false"}</span><br/>
+                        Missing keys:
+                        <span class="mono">${(a.validation?.missing_keys ?? []).join(", ") || "—"}</span><br/>
+                        Range OK:
+                        <span class="${statusTextClass(a.validation?.range_ok ? "OK" : "WARN")}">${a.validation?.range_ok ? "true" : "false"}</span><br/>
+                        Delta OK:
+                        <span class="${statusTextClass(a.validation?.delta_ok ? "OK" : "WARN")}">${a.validation?.delta_ok ? "true" : "false"}</span><br/>
+                        Fallback:
+                        <span class="mono">${a.fallback?.active ? "active" : "inactive"}</span> — ${fmt(a.fallback?.reason)}
                       </div>
                     </details>
                   </td>
@@ -156,7 +176,10 @@ if (!res.ok) {
         const u = d.updater_last_run ?? {};
         document.getElementById("updater").innerHTML = `
           <p class="muted" style="margin:0;">
-            Result: <strong class="${statusTextClass(u.result === "SUCCESS" ? "OK" : (u.result === "FAILED" ? "ERROR" : "WARN"))}">${fmt(u.result)}</strong><br/>
+            Result:
+            <strong class="${statusTextClass(u.result === "SUCCESS" ? "OK" : (u.result === "FAILED" ? "ERROR" : "WARN"))}">
+              ${fmt(u.result)}
+            </strong><br/>
             Run ID: <span class="mono">${fmt(u.run_id)}</span><br/>
             Started: <span class="mono">${fmt(u.started_at_utc)}</span><br/>
             Finished: <span class="mono">${fmt(u.finished_at_utc)}</span><br/>
@@ -166,7 +189,9 @@ if (!res.ok) {
           <details>
             <summary class="muted">Jobs</summary>
             <ul class="muted">
-              ${(u.jobs ?? []).map(j => `<li><span class="mono">${j.job}</span> (${j.source}) — checked:${j.checked} updated:${j.updated} — ${j.message}</li>`).join("") || "<li>—</li>"}
+              ${(u.jobs ?? []).map(j => `
+                <li><span class="mono">${j.job}</span> (${j.source}) — checked:${j.checked} updated:${j.updated} — ${j.message}</li>
+              `).join("") || "<li>—</li>"}
             </ul>
           </details>
         `;
@@ -197,7 +222,12 @@ if (!res.ok) {
         const f = d.recent_flags ?? [];
         document.getElementById("flags").innerHTML = f.length ? `
           <ul class="muted">
-            ${f.map(x => `<li><span class="mono">${x.timestamp_utc}</span> — <strong class="${statusTextClass(x.severity === "ERROR" || x.severity === "CRITICAL" ? "ERROR":"WARN")}">${x.severity}</strong> — ${x.summary}</li>`).join("")}
+            ${f.map(x => `
+              <li><span class="mono">${x.timestamp_utc}</span> —
+              <strong class="${statusTextClass(x.severity === "ERROR" || x.severity === "CRITICAL" ? "ERROR" : "WARN")}">
+                ${x.severity}
+              </strong> — ${x.summary}</li>
+            `).join("")}
           </ul>
         ` : `<p class="muted">No flags.</p>`;
       }
@@ -208,7 +238,10 @@ if (!res.ok) {
             <div class="badge b-broken">BROKEN</div>
             <p style="margin:10px 0 0 0;"><strong>Status data unavailable.</strong></p>
             <p class="muted" style="margin:8px 0 0 0;"><span class="mono">${err.message}</span></p>
-            <p><a class="btn" href="/data/system_status.json" target="_blank" rel="noopener">Open system_status.json</a></p>
+            <p>
+              <a class="btn" href="/api/system_status" target="_blank" rel="noopener">Try API</a>
+              <a class="btn" href="/data/system_status.json" target="_blank" rel="noopener" style="margin-left:8px;">Open seeded JSON</a>
+            </p>
           </div>
         `;
       });
