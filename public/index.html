@@ -5,9 +5,23 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
 
     <title>EnergyCostLab — Energy cost calculators & data</title>
-    <meta name="description" content="EnergyCostLab provides energy cost calculators and regularly-updated energy price datasets." />
+    <meta
+      name="description"
+      content="EnergyCostLab provides energy cost calculators and regularly-updated energy price datasets."
+    />
 
     <link rel="stylesheet" href="/style.css" />
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-GMT2NNZTNM"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-GMT2NNZTNM");
+    </script>
   </head>
 
   <body>
@@ -32,8 +46,8 @@
             <p class="kicker">Live tool</p>
             <h2>Energy Prices (Latest)</h2>
             <p>
-              A quick table UI backed by a hardened pipeline (upstream fetch → fallback fill → UI matrix).
-              Includes direct-only filtering and deep-link selection via URL parameters.
+              A quick table UI backed by a hardened pipeline (upstream fetch → fallback fill → UI matrix). Includes
+              direct-only filtering and deep-link selection via URL parameters.
             </p>
 
             <div class="badges">
@@ -42,7 +56,7 @@
               <span class="badge">Health: <span class="mono">/api/energy_prices_status.json</span></span>
             </div>
 
-            <div style="margin-top: 12px; display:flex; gap:10px; flex-wrap:wrap;">
+            <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
               <a class="btn primary" href="/energy-prices">Open Energy Prices</a>
               <a class="btn" href="/api/energy_prices_latest_ui.json">View API JSON</a>
               <a class="btn" href="/api/energy_prices_status.json">View Status JSON</a>
@@ -52,9 +66,7 @@
           <aside class="card" style="grid-column: span 4;">
             <p class="kicker">Roadmap</p>
             <h3>More calculators coming</h3>
-            <p>
-              We’ll add additional pages using the same structure: lightweight UI + stable API endpoints.
-            </p>
+            <p>We’ll add additional pages using the same structure: lightweight UI + stable API endpoints.</p>
             <ul class="list">
               <li>Electricity rate comparisons</li>
               <li>Heating cost comparisons (fuel switching)</li>
@@ -65,7 +77,7 @@
 
           <article class="card" style="grid-column: span 12;">
             <p class="kicker">Implementation notes</p>
-            <p class="mono" style="margin:0;">
+            <p class="mono" style="margin: 0;">
               This site is hosted on Netlify. Public pages live in <span class="mono">/public</span> and APIs are served
               via Netlify Functions routed under <span class="mono">/api/*</span>.
             </p>
